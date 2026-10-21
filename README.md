@@ -204,14 +204,14 @@ not regular files and timestamps in the future are rejected. `session.json` uses
 ## How it works
 
 HKTVmall has no public API, so the server speaks to the endpoints its website uses, over plain HTTP, with the
-cookies of a browser session you signed in to. [docs/hktvmall-site.md](docs/hktvmall-site.md) records what is known
-about those endpoints and their quirks; [docs/DESIGN.md](docs/DESIGN.md) explains the decisions. When HKTVmall
+cookies of a browser session you signed in to. [docs/hktvmall-site.md](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/docs/hktvmall-site.md) records what is known
+about those endpoints and their quirks; [docs/DESIGN.md](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/docs/DESIGN.md) explains the decisions. When HKTVmall
 changes its site, calls fail with `schema_changed` until the server is updated.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Tests never contact HKTVmall.
+See [CONTRIBUTING.md](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/CONTRIBUTING.md). Tests never contact HKTVmall.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/LICENSE).
