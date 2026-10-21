@@ -1,0 +1,95 @@
+{
+ "cartData": {
+  "totalPriceWithTax": {
+   "formattedValue": "$ 369.60",
+   "value": "369.6"
+  }
+ },
+ "cartDataGroupByDeliveryDate": {
+  "deliveryDateOrderEntries": [
+   {
+    "batchNumber": 1,
+    "deliveryMode": "hktv-standard-delivery",
+    "freeDelivery": true,
+    "groupTitle": "Delivery Batch 1",
+    "orderEntries": [
+     {
+      "basePrice": {
+       "formattedValue": "$ 180.00",
+       "value": "180.0"
+      },
+      "discountedUnitPrice": {
+       "formattedValue": "$ 144.00",
+       "value": "144.0"
+      },
+      "product": {
+       "code": "S9990002_S_130001",
+       "name": "Example Laundry Liquid (Refill) 2L x 2",
+       "stock": {
+        "stockLevel": 240
+       },
+       "url": "/main/Example-E-Delivery/s/S9990002/Supermarket/Supermarket/Household/Laundry/Example-Laundry-Liquid-Refill-2L-x-2/p/S9990002_S_130001"
+      },
+      "quantity": 2,
+      "totalPrice": {
+       "formattedValue": "$ 288.00",
+       "value": "288.0"
+      }
+     },
+     {
+      "basePrice": {
+       "formattedValue": "$ 98.00",
+       "value": "98.0"
+      },
+      "discountedUnitPrice": {
+       "formattedValue": "$ 79.50",
+       "value": "79.5"
+      },
+      "product": {
+       "code": "B9990004_S_NDL00025",
+       "name": "Example Instant Noodles - Sesame Flavour 5 Packs",
+       "stock": {
+        "stockLevel": 9
+       },
+       "url": "/main/Example-Grocer%27s-Corner/s/B9990004/Supermarket/Supermarket/Noodles/Instant-Noodles/Bag-Noodles/Example-Instant-Noodles-Sesame-Flavour-5-Packs/p/B9990004_S_NDL00025"
+      },
+      "quantity": 1,
+      "totalPrice": {
+       "formattedValue": "$ 79.50",
+       "value": "79.5"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "cartSubTotal": {
+  "formattedValue": "$ 367.50",
+  "value": "367.50"
+ },
+ "deliveryCost": "$ 40.00",
+ "deliveryThreshold": "$ 88.00",
+ "hktvDeliveryFee": {
+  "value": {
+   "formattedValue": "$ 0.00",
+   "value": "0"
+  }
+ },
+ "merchantDeliveryFeeList": [],
+ "otherFeeRemarks": [
+  {
+   "code": "plasticBagLevy",
+   "fee": {
+    "formattedValue": "$ 1.00",
+    "value": "1.0"
+   }
+  },
+  {
+   "code": "fuelSurcharge",
+   "fee": {
+    "formattedValue": "$ 1.10",
+    "value": "1.1"
+   }
+  }
+ ]
+}

@@ -1,0 +1,91 @@
+{
+ "status": "SUCCESS",
+ "data": {
+  "deliveryTimeSlot": {
+   "timeSlotValue": "203003061000",
+   "formattedValue": "6 Mar (Wed) 10:00AM - 2:00PM",
+   "isUnlimitedAddonTimeSlot": false,
+   "isNotAvailable": false,
+   "timeslotCode": "AM"
+  },
+  "chosenByUser": true,
+  "deliveryTimeSlots": [
+   {
+    "timeSlotValue": "203003051000",
+    "formattedValue": "5 Mar (Tue) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003061000",
+    "formattedValue": "6 Mar (Wed) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003071000",
+    "formattedValue": "7 Mar (Thu) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": true,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003081400",
+    "formattedValue": "8 Mar (Fri) 2:00PM - 6:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "PM"
+   },
+   {
+    "timeSlotValue": "203003091000",
+    "formattedValue": "9 Mar (Sat) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003101000",
+    "formattedValue": "10 Mar (Sun) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003111000",
+    "formattedValue": "11 Mar (Mon) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003121400",
+    "formattedValue": "12 Mar (Tue) 2:00PM - 6:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "PM"
+   },
+   {
+    "timeSlotValue": "203003131000",
+    "formattedValue": "13 Mar (Wed) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   },
+   {
+    "timeSlotValue": "203003141000",
+    "formattedValue": "14 Mar (Thu) 10:00AM - 2:00PM",
+    "isUnlimitedAddonTimeSlot": false,
+    "isNotAvailable": false,
+    "timeslotCode": "AM"
+   }
+  ],
+  "deliveryFee": 0.0,
+  "deliveryThreshold": 88.0,
+  "expressDeliveryFee": 0.0,
+  "expressDeliveryThreshold": 300.0,
+  "isExpress": false,
+  "expressDeliveryTimeSlots": []
+ }
+}

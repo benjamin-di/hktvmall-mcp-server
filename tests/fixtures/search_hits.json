@@ -1,0 +1,233 @@
+[
+ {
+  "averageRating": 4.2,
+  "baseProduct": "H999000120000001B",
+  "brandEn": "Example Dairy",
+  "code": "H9990001_S_20000001B",
+  "countryOfOriginEn": "New Zealand",
+  "deliveryLabelCode": "standard-same-day",
+  "deliveryLabelScheduleCode": [
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898748000000,
+    "endTime": 1898719200000,
+    "startTime": 1898697600000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898762400000,
+    "endTime": 1898733600000,
+    "startTime": 1898719200000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898773200000,
+    "endTime": 1898744400000,
+    "startTime": 1898733600000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898784000000,
+    "endTime": 1898755200000,
+    "startTime": 1898744400000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898805600000,
+    "endTime": 1898776800000,
+    "startTime": 1898755200000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898812800000,
+    "endTime": 1898784000000,
+    "startTime": 1898776800000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898834400000,
+    "endTime": 1898805600000,
+    "startTime": 1898784000000
+   },
+   {
+    "deliveryMode": "standard-same-day",
+    "deliveryRemarkMsgCode": "standard-same-day",
+    "earliestDeliveryTimestamp": 1898848800000,
+    "endTime": 1898820000000,
+    "startTime": 1898805600000
+   }
+  ],
+  "gallery": [
+   {
+    "format": "product",
+    "imageType": "PRIMARY",
+    "url": "https://images.hktvmall.com/h9990001/100001/h9990001_20000001b_300101120000_01_1200.jpg"
+   },
+   {
+    "format": "product",
+    "imageType": "GALLERY",
+    "url": "https://images.hktvmall.com/h9990001/100001/h9990001_20000001b_300101120000_02_1200.jpg"
+   },
+   {
+    "format": "product",
+    "imageType": "GALLERY",
+    "url": "https://images.hktvmall.com/h9990001/100001/h9990001_20000001b_300101120000_03_1200.jpg"
+   }
+  ],
+  "imageLink": "https://images.hktvmall.com/h9990001/100001/h9990001_20000001b_300101120000_01_300.jpg",
+  "mainCatNameEn": [
+   "Supermarket"
+  ],
+  "nameEn": "Example Fresh Milk 1L x 3",
+  "nameZh": "示例鮮牛奶 1公升 x 3",
+  "numberOfReviews": 240,
+  "packingSpecEn": "1000ml x 3",
+  "priceList": [
+   {
+    "currencyIso": "HKD",
+    "formattedValue": "$ 96.00",
+    "membershipLevel": "NORMAL",
+    "priceType": "BUY",
+    "value": 96.0
+   },
+   {
+    "currencyIso": "HKD",
+    "formattedValue": "$ 54.90",
+    "membershipLevel": "NORMAL",
+    "priceType": "DISCOUNT",
+    "value": 54.9
+   }
+  ],
+  "sellingPrice": 54.9,
+  "stock": {
+   "consignmentWarehouse": false,
+   "forceInStock": false,
+   "mainlandConsolidatedWarehouse": false,
+   "mainlandWarehouse": false,
+   "sameDayInHubWarehouse": false,
+   "stockLevelStatus": {
+    "code": "inStock",
+    "type": "StockLevelStatus"
+   },
+   "thirdPartyLogisticsWarehouse": false,
+   "wetmarketWarehouse": false
+  },
+  "storeClosedStatus": 0,
+  "storeCode": "H9990001",
+  "storeNameEn": "EXAMPLE MART",
+  "summaryEn": "Example Fresh Milk (3 Packs) *Shelf life is at least 10 days",
+  "urlEn": "main/EXAMPLE-MART/s/H9990001/Supermarket/Supermarket/Beverages/Milk-%26-Soy-Milk/Example-Fresh-Milk-1L-x-3/p/H9990001_S_20000001B"
+ },
+ {
+  "averageRating": 4.5,
+  "baseProduct": "H9990003310000001",
+  "brandEn": "EXAMPLE PRESS",
+  "code": "H9990003_S_310000001",
+  "countryOfOriginEn": "Greece",
+  "deliveryLabelCode": "standard-express",
+  "deliveryLabelScheduleCode": [
+   {
+    "deliveryMode": "closed-store",
+    "endTime": 1898830800000,
+    "startTime": 1898647200000
+   },
+   {
+    "deliveryMode": "standard-express-slow",
+    "earliestDeliveryTimestamp": 1898985600000,
+    "endTime": 1898841600000,
+    "startTime": 1898830800000
+   },
+   {
+    "deliveryMode": "standard-express-slow",
+    "earliestDeliveryTimestamp": 1899007200000,
+    "endTime": 1898863200000,
+    "startTime": 1898841600000
+   },
+   {
+    "deliveryMode": "standard-express-slow",
+    "earliestDeliveryTimestamp": 1899014400000,
+    "endTime": 1898870400000,
+    "startTime": 1898863200000
+   },
+   {
+    "deliveryMode": "standard-express",
+    "earliestDeliveryTimestamp": 1899000000000,
+    "endTime": 1898892000000,
+    "startTime": 1898870400000
+   },
+   {
+    "deliveryMode": "standard-express",
+    "earliestDeliveryTimestamp": 1899014400000,
+    "endTime": 1898906400000,
+    "startTime": 1898892000000
+   },
+   {
+    "deliveryMode": "standard-express",
+    "earliestDeliveryTimestamp": 1899025200000,
+    "endTime": 1898917200000,
+    "startTime": 1898906400000
+   }
+  ],
+  "gallery": [
+   {
+    "format": "product",
+    "imageType": "PRIMARY",
+    "url": "https://cdn-media.hktvmall.com/hktv-mms/HKTV/mms/uploadProductImage/0a1b/2c3d/4e5f/ExampleOil01300101120000_1200.jpg"
+   },
+   {
+    "format": "product",
+    "imageType": "GALLERY",
+    "url": "https://cdn-media.hktvmall.com/hktv-mms/HKTV/mms/uploadProductImage/0a1b/2c3d/4e5f/ExampleOil02300101120500_1200.jpg"
+   }
+  ],
+  "imageLink": "https://cdn-media.hktvmall.com/hktv-mms/HKTV/mms/uploadProductImage/0a1b/2c3d/4e5f/ExampleOil01300101120000_300.jpg",
+  "mainCatNameEn": [
+   "Supermarket"
+  ],
+  "nameEn": "Example Cold-Pressed Sesame Oil 250ml (DryGoods)",
+  "nameZh": "示例冷壓芝麻油 250毫升 (室溫)",
+  "numberOfReviews": 8,
+  "packingSpecEn": "250ml",
+  "priceList": [
+   {
+    "currencyIso": "HKD",
+    "formattedValue": "$ 120.00",
+    "membershipLevel": "NORMAL",
+    "priceType": "BUY",
+    "value": 120.0
+   },
+   {
+    "currencyIso": "HKD",
+    "formattedValue": "$ 98.00",
+    "membershipLevel": "NORMAL",
+    "priceType": "DISCOUNT",
+    "value": 98.0
+   }
+  ],
+  "promotionTextEn": "Toasty Flavour! | RSP $120",
+  "sellingPrice": 98.0,
+  "stock": {
+   "consignmentWarehouse": false,
+   "forceInStock": false,
+   "mainlandConsolidatedWarehouse": false,
+   "mainlandWarehouse": false,
+   "sameDayInHubWarehouse": false,
+   "stockLevelStatus": {
+    "code": "inStock",
+    "type": "StockLevelStatus"
+   },
+   "thirdPartyLogisticsWarehouse": false,
+   "wetmarketWarehouse": false
+  },
+  "storeClosedStatus": 1,
+  "storeCode": "H9990003",
+  "storeNameEn": "Example Grocer's Corner",
+  "summaryEn": "An invented product for tests. Pressed from roasted white sesame; nutty aroma, light colour.#Example #Cold Press",
+  "urlEn": "main/Example-Grocer%27s-Corner/s/H9990003/Supermarket/Supermarket/Rice-%26-Cooking-Oil/Cooking-Oil/Sesame-Oil/Example-Cold-Pressed-Sesame-Oil-250ml-DryGoods/p/H9990003_S_310000001"
+ }
+]

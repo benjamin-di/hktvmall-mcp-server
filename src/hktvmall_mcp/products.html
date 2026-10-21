@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HKTVmall products</title>
+<!--
+  hktv_show_products' cards (MCP Apps, protocol 2026-01-26): the host loads this page in a sandboxed frame,
+  answers ui/initialize, then sends the tool's input and result. Photos load from HKTVmall's CDNs only (the
+  resource's CSP); the page connects nowhere and opens product pages through the host (ui/open-link).
+  Everything shown is set as text, never as HTML: titles come from merchants, notes from the agent.
+-->
+<style>
+  :root {
+    --fb-bg: #ffffff; --fb-card: #ffffff; --fb-text: #1d1d1b; --fb-muted: #6b6b66; --fb-border: #e4e3de;
+    --fb-accent: #1a7f4b; --fb-accent-bg: #eef7f1; --fb-warn: #9a5b00; --fb-warn-bg: #fff4e0;
+    --fb-bad: #b42318; --fb-bad-bg: #fdecea;
+  }
+  :root[data-theme="dark"] {
+    --fb-bg: #1f1f1d; --fb-card: #262624; --fb-text: #ecebe6; --fb-muted: #a3a29c; --fb-border: #3a3a37;
+    --fb-accent: #5cc98d; --fb-accent-bg: #1d3327; --fb-warn: #f0b45a; --fb-warn-bg: #3a2c14;
+    --fb-bad: #f08a80; --fb-bad-bg: #3b1d1a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    font-family: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+    font-size: var(--font-text-sm-size, 14px); line-height: 1.4;
+    color: var(--color-text-primary, var(--fb-text));
+  }
+  main { padding: 4px 2px 6px; }
+  header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 2px 10px; }
+  h1 { margin: 0; font-size: var(--font-heading-sm-size, 16px); font-weight: var(--font-weight-semibold, 600); }
+  .meta { color: var(--color-text-secondary, var(--fb-muted)); font-size: 12px; }
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); }
+  .card {
+    display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+    background: var(--color-background-primary, var(--fb-card));
+    border: 1px solid var(--color-border-tertiary, var(--fb-border));
+    border-radius: var(--border-radius-lg, 12px);
+  }
+  .photo { position: relative; display: block; aspect-ratio: 1 / 1; background: #fff; overflow: hidden; }
+  .track { display: flex; height: 100%; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
+           overscroll-behavior-x: contain; }
+  .track::-webkit-scrollbar { display: none; }
+  .slide { position: relative; flex: 0 0 100%; height: 100%; scroll-snap-align: center; }
+  .slide img { width: 100%; height: 100%; object-fit: contain; padding: 8px; display: block; }
+  .none { position: absolute; inset: 0; display: grid; place-items: center; color: #9a9a94; font-size: 12px; }
+  .count { position: absolute; right: 7px; bottom: 7px; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+           background: rgba(0, 0, 0, .55); color: #fff; pointer-events: none; }
+  .nav { position: absolute; top: 50%; width: 28px; height: 28px; margin-top: -14px; padding: 0; border: 0;
+         border-radius: 50%; background: rgba(255, 255, 255, .92); color: #1d1d1b; font-size: 16px; line-height: 28px;
+         box-shadow: 0 1px 3px rgba(0, 0, 0, .25); cursor: pointer; opacity: 0; transition: opacity .15s; }
+  .nav.prev { left: 6px; } .nav.next { right: 6px; }
+  .photo:hover .nav, .nav:focus-visible { opacity: 1; }
+  .nav[disabled] { visibility: hidden; }
+  @media (hover: none) { .nav { display: none; } }  /* phones swipe */
+  .badge {
+    position: absolute; top: 8px; left: 8px; padding: 2px 7px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; background: var(--fb-warn-bg); color: var(--fb-warn);
+  }
+  .badge.bad { background: var(--fb-bad-bg); color: var(--fb-bad); }
+  .body { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px 10px; flex: 1; }
+  .brand { color: var(--color-text-secondary, var(--fb-muted)); font-size: 11px; text-transform: uppercase;
+           letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title { color: inherit; text-decoration: none; font-weight: var(--font-weight-medium, 500);
+           display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .title:hover { text-decoration: underline; }
+  .pack { color: var(--color-text-secondary, var(--fb-muted)); font-size: 12px; }
+  .price { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+  .now { font-size: 16px; font-weight: var(--font-weight-bold, 700); }
+  .was { color: var(--color-text-secondary, var(--fb-muted)); text-decoration: line-through; font-size: 12px; }
+  .unit { color: var(--color-text-secondary, var(--fb-muted)); font-size: 12px; }
+  .facts { color: var(--color-text-secondary, var(--fb-muted)); font-size: 12px; }
+  .stars { color: #d98a00; }
+  .note {
+    margin-top: 5px; padding: 6px 8px; border-radius: var(--border-radius-md, 8px); font-size: 12.5px;
+    background: var(--fb-accent-bg); color: var(--color-text-primary, var(--fb-text));
+    border-left: 3px solid var(--fb-accent);
+  }
+  .spacer { flex: 1; }
+  .open {
+    margin-top: 7px; align-self: flex-start; color: var(--fb-accent); font-weight: 600; font-size: 12.5px;
+    text-decoration: none; white-space: nowrap;
+  }
+  .open:hover { text-decoration: underline; }
+  .missing, .status { margin: 10px 2px 0; color: var(--color-text-secondary, var(--fb-muted)); font-size: 12px; }
+  .skeleton .photo { background: var(--color-border-tertiary, var(--fb-border)); opacity: .5; }
+  .skeleton .line { height: 10px; margin: 6px 0; border-radius: 4px; background: var(--color-border-tertiary, var(--fb-border)); }
+</style>
+</head>
+<body>
+<main id="root"><p class="status">Loading products…</p></main>
+<script>
+(() => {
+  "use strict";
+  const IMAGE_HOSTS = ["images.hktv-img.com", "images.hktvmall.com", "cdn-media.hktvmall.com", "cdn-mms.hktvmall.com"];  // links.IMAGE_HOSTS
+  const PAGE_PREFIX = "https://www.hktvmall.com/hktv/";
+  const root = document.getElementById("root");
+  let hostCaps = {};
+  let locale = undefined;
+  let nextId = 1;
+  const pending = new Map();
+
+  // --- MCP Apps over postMessage (JSON-RPC 2.0, parent window only) ---
+  const send = (msg) => window.parent.postMessage(msg, "*");
+  const notify = (method, params) => send({ jsonrpc: "2.0", method, params: params || {} });
+  function request(method, params) {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => { if (pending.delete(id)) reject(new Error("timeout")); }, 15000);
+    });
+  }
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const m = event.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.method === undefined && m.id !== undefined) {  // a response to one of our requests
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      m.error ? p.reject(m.error) : p.resolve(m.result);
+      return;
+    }
+    if (m.id !== undefined) {  // a request from the host
+      const known = m.method === "ui/resource-teardown" || m.method === "ping";
+      send(known ? { jsonrpc: "2.0", id: m.id, result: {} }
+                 : { jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    if (m.method === "ui/notifications/tool-input") showLoading(m.params && m.params.arguments);
+    else if (m.method === "ui/notifications/tool-result") showResult(m.params || {});
+    else if (m.method === "ui/notifications/tool-cancelled") status("Cancelled.");
+    else if (m.method === "ui/notifications/host-context-changed") applyContext(m.params || {});
+  });
+
+  function applyContext(ctx) {
+    if (ctx.theme === "dark" || ctx.theme === "light") document.documentElement.dataset.theme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars && typeof vars === "object") {
+      for (const [k, v] of Object.entries(vars)) {
+        if (k.startsWith("--") && typeof v === "string") document.documentElement.style.setProperty(k, v);
+      }
+    }
+    if (typeof ctx.locale === "string") locale = ctx.locale;
+  }
+  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    document.documentElement.dataset.theme = "dark";
+  }
+
+  // Tell the host how tall the cards are (they grow as photos load).
+  let lastHeight = 0;
+  const reportSize = () => {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h !== lastHeight) { lastHeight = h; notify("ui/notifications/size-changed", { height: h }); }
+  };
+  if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.documentElement);
+
+  function openPage(url) {
+    const fallback = () => window.open(url, "_blank", "noopener,noreferrer");
+    if (!hostCaps.openLinks) return fallback();
+    request("ui/open-link", { url }).then((r) => { if (r && r.isError) fallback(); }, fallback);
+  }
+
+  // --- rendering: text only, URLs checked against HKTVmall's hosts ---
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function safePage(u) { return typeof u === "string" && u.startsWith(PAGE_PREFIX) ? u : null; }
+  function safeImage(u) {
+    try {
+      const x = new URL(u);
+      return x.protocol === "https:" && !x.port && IMAGE_HOSTS.includes(x.hostname) ? x.href : null;
+    } catch (_) { return null; }
+  }
+  function link(cls, url, text) {
+    const a = el("a", cls, text);
+    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.addEventListener("click", (e) => { e.preventDefault(); openPage(url); });
+    return a;
+  }
+  const money = (m) => (m && typeof m.display === "string" ? m.display : null);
+  function perUnit(u) {
+    if (!u || typeof u.cents !== "number" || typeof u.per !== "string") return null;
+    return "HK$" + (u.cents / 100).toFixed(2) + " / " + u.per;
+  }
+  function reopens(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "Shop closed";
+    const f = new Intl.DateTimeFormat(locale, { timeZone: "Asia/Hong_Kong", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    return "Shop closed until " + f.format(d);
+  }
+
+  // The product's photos (the result's _meta "hktvmall/photos", else its one image): swipe or arrows, loaded
+  // only when the person gets near them.
+  function gallery(urls, name) {
+    const photo = el("div", "photo");
+    const srcs = urls.map(safeImage).filter(Boolean).slice(0, 8);
+    if (!srcs.length) { photo.append(el("div", "none", "No photo")); return photo; }
+    const track = el("div", "track");
+    const imgs = srcs.map((src, i) => {
+      const slide = el("div", "slide");
+      const img = el("img");
+      img.alt = i ? "" : name; img.referrerPolicy = "no-referrer"; img.decoding = "async"; img.dataset.src = src;
+      img.addEventListener("error", () => { img.remove(); slide.append(el("div", "none", "Photo unavailable")); });
+      slide.append(img);
+      track.append(slide);
+      return img;
+    });
+    photo.append(track);
+    const load = (i) => { const img = imgs[i]; if (img && img.dataset.src) { img.src = img.dataset.src; delete img.dataset.src; } };
+    load(0);
+    if (srcs.length > 1) {
+      const count = el("span", "count", "1/" + srcs.length);
+      const prev = el("button", "nav prev", "‹"), next = el("button", "nav next", "›");
+      prev.type = next.type = "button";
+      prev.setAttribute("aria-label", "Previous photo"); next.setAttribute("aria-label", "Next photo");
+      const at = () => Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+      const update = () => {
+        const i = at();
+        load(i); load(i + 1);
+        count.textContent = (i + 1) + "/" + srcs.length;
+        prev.disabled = i === 0; next.disabled = i === srcs.length - 1;
+      };
+      let queued = false;
+      track.addEventListener("scroll", () => {
+        if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; update(); }); }
+      }, { passive: true });
+      const go = (d) => track.scrollTo({ left: (at() + d) * track.clientWidth, behavior: "smooth" });
+      prev.addEventListener("click", () => go(-1));
+      next.addEventListener("click", () => go(1));
+      photo.append(prev, next, count);
+      load(1);
+      prev.disabled = true;
+    }
+    return photo;
+  }
+
+  function card(p, urls) {
+    const c = el("article", "card");
+    const page = safePage(p.url);
+    const name = p.title || p.title_zh || p.id;
+    const photo = gallery(urls, name);
+    if (p.availability === "out_of_stock") photo.append(el("span", "badge bad", "Out of stock"));
+    else if (p.availability === "store_closed") photo.append(el("span", "badge bad", reopens(p.reopens_at)));
+    else if (p.availability === "low_stock") photo.append(el("span", "badge", "Low stock"));
+    c.append(photo);
+
+    const b = el("div", "body");
+    if (p.brand) b.append(el("div", "brand", p.brand));
+    b.append(page ? link("title", page, name) : el("div", "title", name));
+    if (p.pack) b.append(el("div", "pack", p.pack));
+    const price = el("div", "price");
+    if (money(p.price)) price.append(el("span", "now", money(p.price)));
+    if (money(p.list_price)) price.append(el("span", "was", money(p.list_price)));
+    if (perUnit(p.price_per_unit)) price.append(el("span", "unit", perUnit(p.price_per_unit)));
+    if (price.childNodes.length) b.append(price);
+    const facts = [];
+    if (typeof p.rating === "number" && p.review_count) {
+      const r = el("span");
+      r.append(el("span", "stars", "★ "), document.createTextNode(p.rating.toFixed(1) + " (" + p.review_count + ")"));
+      facts.push(r);
+    }
+    if (p.delivery) facts.push(document.createTextNode(p.delivery));
+    if (facts.length) {
+      const f = el("div", "facts");
+      facts.forEach((x, i) => { if (i) f.append(document.createTextNode(" · ")); f.append(x); });
+      b.append(f);
+    }
+    if (p.seller) b.append(el("div", "facts", p.seller));
+    if (p.note) b.append(el("div", "note", p.note));
+    b.append(el("div", "spacer"));
+    if (page) b.append(link("open", page, "View on HKTVmall ↗"));
+    c.append(b);
+    return c;
+  }
+
+  function status(text) { root.replaceChildren(el("p", "status", text)); }
+
+  function showLoading(args) {
+    const n = Math.min(Array.isArray(args && args.items) ? args.items.length : 3, 12) || 3;
+    const grid = el("div", "grid");
+    for (let i = 0; i < n; i++) {
+      const c = el("div", "card skeleton");
+      c.append(el("div", "photo"));
+      const b = el("div", "body");
+      b.append(el("div", "line"), el("div", "line"));
+      c.append(b);
+      grid.append(c);
+    }
+    const parts = [];
+    if (args && typeof args.title === "string" && args.title) {
+      const h = el("header"); h.append(el("h1", "", args.title)); parts.push(h);
+    }
+    parts.push(grid);
+    root.replaceChildren(...parts);
+  }
+
+  function data(result) {
+    if (result.structuredContent && typeof result.structuredContent === "object") return result.structuredContent;
+    for (const c of result.content || []) {
+      if (c && c.type === "text") { try { return JSON.parse(c.text); } catch (_) { /* not JSON */ } }
+    }
+    return null;
+  }
+
+  function showResult(result) {
+    const d = data(result);
+    if (result.isError || !d || !Array.isArray(d.products)) {
+      const err = d && d.error;
+      status(err && err.next_step ? "HKTVmall: " + err.next_step : "These products could not be shown.");
+      return;
+    }
+    const parts = [];
+    const h = el("header");
+    if (d.title) h.append(el("h1", "", d.title));
+    h.append(el("span", "meta", d.products.length + (d.products.length === 1 ? " product" : " products") + " · HKTVmall"));
+    parts.push(h);
+    if (d.products.length) {
+      const grid = el("div", "grid");
+      const meta = (result._meta && result._meta["hktvmall/photos"]) || {};
+      d.products.forEach((p) => {
+        if (!p || typeof p !== "object") return;
+        const urls = Array.isArray(meta[p.id]) && meta[p.id].length ? meta[p.id] : (p.image ? [p.image] : []);
+        grid.append(card(p, urls));
+      });
+      parts.push(grid);
+    }
+    if (Array.isArray(d.not_found) && d.not_found.length) {
+      parts.push(el("p", "missing", "Not sold on HKTVmall right now: " + d.not_found.join(", ")));
+    }
+    for (const n of d.notes || []) if (n && n.text) parts.push(el("p", "missing", n.text));
+    root.replaceChildren(...parts);
+  }
+
+  request("ui/initialize", {
+    appInfo: { name: "hktvmall-products", version: "__VERSION__" },
+    appCapabilities: { availableDisplayModes: ["inline"] },
+    protocolVersion: "2026-01-26",
+  }).then((r) => {
+    hostCaps = (r && r.hostCapabilities) || {};
+    applyContext((r && r.hostContext) || {});
+    notify("ui/notifications/initialized");
+  }, () => { /* no MCP Apps host answered: results that still arrive are shown */ });
+})();
+</script>
+</body>
+</html>

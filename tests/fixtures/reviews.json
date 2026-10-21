@@ -1,0 +1,79 @@
+{
+ "data": [
+  {
+   "comment": "盒裝有少少凹咗，不過飲落冇問題，希望下次包裝好啲。",
+   "date": "2030-03-01T21:14:05.123+08:00",
+   "rating": 2,
+   "tags": [
+    {
+     "textEn": "Poor packaging",
+     "textZh": "包裝欠佳",
+     "textZhCn": "包装不良",
+     "categoryEn": "Product Knowledge",
+     "categoryZh": "產品知識"
+    }
+   ],
+   "replies": [
+    {
+     "comment": "(merchant reply)"
+    }
+   ],
+   "user": {
+    "nickname": "DECOY REVIEWER"
+   }
+  },
+  {
+   "comment": "Came a day late &amp; one carton had split open (the rest were fine&#41;",
+   "date": "2030-02-25T22:40:51.906+08:00",
+   "rating": 1,
+   "tags": [
+    {
+     "textEn": "Product broken and damaged",
+     "textZh": "商品故障及損壞",
+     "textZhCn": "商品故障及损坏",
+     "categoryEn": "After Sales Service",
+     "categoryZh": "售後服務"
+    },
+    {
+     "textEn": "Poor delivery service",
+     "textZh": "派送服務欠佳",
+     "textZhCn": "派送服务不佳",
+     "categoryEn": "Fulfillment",
+     "categoryZh": "訂單問題"
+    }
+   ],
+   "replies": [
+    {
+     "comment": "(merchant reply)"
+    }
+   ],
+   "user": {
+    "nickname": "DECOY REVIEWER"
+   }
+  },
+  {
+   "comment": "新鮮，好飲",
+   "date": "2030-02-18T08:03:17.450+08:00",
+   "rating": 5,
+   "tags": [
+    {
+     "textEn": "Excellent quality",
+     "textZh": "品質優良",
+     "textZhCn": "品质优良",
+     "categoryEn": "Product Knowledge",
+     "categoryZh": "產品知識"
+    }
+   ],
+   "replies": [],
+   "user": {
+    "nickname": "DECOY REVIEWER"
+   }
+  }
+ ],
+ "pagination": {
+  "page": 0,
+  "pageSize": 3,
+  "total": 252,
+  "hasNext": true
+ }
+}

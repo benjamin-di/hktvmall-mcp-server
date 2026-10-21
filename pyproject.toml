@@ -1,0 +1,79 @@
+[project]
+name = "hktvmall-mcp"
+version = "0.11.3"
+description = "MCP server for HKTVmall (Hong Kong): search, product cards, order history and basket edits read back from HKTVmall; never pays"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "benjamin-di" }]
+requires-python = ">=3.12"
+keywords = ["mcp", "model-context-protocol", "hktvmall", "hong-kong", "shopping", "groceries"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    # FastMCP 4 (MCP SDK 2): stdio, and stateless JSON over streamable HTTP.
+    "fastmcp==4.0.10",
+    # AES-GCM for connected accounts' sessions at rest (already in the lock through FastMCP's auth stack).
+    "cryptography>=50.0.0",
+    # The per-user state folder for local use (already in the lock through FastMCP).
+    "platformdirs>=4.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/benjamin-di/hktvmall-mcp-server"
+Issues = "https://github.com/benjamin-di/hktvmall-mcp-server/issues"
+
+[project.optional-dependencies]
+# The sign-in window: `hktvmall-mcp login` and the login service's image (Dockerfile.login). The server image never
+# installs it (requirements-runtime.lock has no extras).
+login = ["patchright==1.61.2"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.14"]
+
+[tool.uv]
+# Security floors for FastMCP's dependencies.
+constraint-dependencies = [
+    "starlette>=1.3.1,<2",
+    "cryptography>=50.0.0",
+    "joserfc>=1.6.8",
+    "idna>=3.15",
+    "pydantic-settings>=2.14.2",
+    "pyjwt>=2.13.0",
+    "python-multipart>=0.0.31",
+    "authlib>=1.7.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hktvmall_mcp", "src/hktvmall_login"]
+
+[project.scripts]
+hktvmall-mcp = "hktvmall_mcp.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["SIM105"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hktvmall_mcp", "hktvmall_login"]
