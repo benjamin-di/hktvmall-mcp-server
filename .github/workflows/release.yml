@@ -15,8 +15,36 @@ on:
 
 permissions: {}
 
+# GitHub can deliver one tag push twice: the runs of a ref queue one behind the other, and a
+# run whose tag already has a GitHub release (the last job) stops at `released`.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  released:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      done: ${{ steps.check.outputs.done }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          done=false
+          if [ "$GITHUB_REF_TYPE" = tag ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            done=true
+            echo "$TAG is already released: nothing to do"
+          fi
+          echo "done=$done" >> "$GITHUB_OUTPUT"
+
   ci:
+    needs: released
+    if: needs.released.outputs.done != 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read

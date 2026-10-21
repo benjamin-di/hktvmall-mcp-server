@@ -29,3 +29,11 @@ sign in with `uv run --extra login hktvmall-mcp login` and use a separate `HKTVM
   handful of requests, never lists, and commit nothing they return.
 
 AGENTS.md has the same rules for coding agents.
+
+## How changes land
+
+Each release of this repository is exported from a private working repository as one
+`Release X.Y.Z` commit, so pull requests are not merged here: the next release would replace
+them. When a change fits, the maintainer applies it there, credits you in the release notes
+and closes the pull request with a link to the release that contains it. Issues are welcome;
+answers are best effort.
