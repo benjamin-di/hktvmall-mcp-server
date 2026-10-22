@@ -148,6 +148,12 @@ accounts share the server's IP address, so requests are paced and budgeted for a
 codes are rate-limited per client address from `X-Forwarded-For`: the reverse proxy in front must overwrite that
 header with the client's address, not append to it.
 
+Pasting works in the login window: Ctrl+V (Cmd+V on a Mac) types the clipboard's text into HKTVmall's page, so a
+password manager's copy can be used (a small add-on to noVNC's viewer, `src/hktvmall_mcp/paste.js`; up to 1000
+characters the window's keyboard has, which covers ASCII; the text is never logged or kept). On a phone, noVNC's
+keyboard button opens the phone's keyboard, which pastes as usual. Passkeys do not work in a remote window: log in
+with a password or a code.
+
 Run the login browser on a private network next to the server, never published to the internet: it listens on port
 8080, refuses to start without `HKTVMALL_LOGIN_TOKEN` (at least 32 characters, the same value the server gets) and
 holds at most `HKTVMALL_LOGIN_SLOTS` (2) logins at a time, each ended after `HKTVMALL_LOGIN_MINUTES` (15)

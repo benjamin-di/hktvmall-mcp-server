@@ -13,7 +13,7 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from starlette.testclient import TestClient
 from test_accounts import ALEX, cookies
 
-from hktvmall_mcp import server
+from hktvmall_mcp import connect, server
 from hktvmall_mcp.accounts import DEFAULT, Accounts, parse_key
 from hktvmall_mcp.invites import Invites
 from hktvmall_mcp.oauth import HktvOAuth, redirect_allowed
@@ -23,6 +23,7 @@ from hktvmall_mcp.state import StateStore
 KEY = base64.b64encode(bytes(range(32))).decode()
 PUBLIC = "https://hktvmall.example"
 CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+VNC_HTML = b'<!DOCTYPE html><html><head><script type="module" src="app/ui.js"></script></head><body></body></html>'
 
 
 class FakeLogins:
@@ -57,7 +58,7 @@ class FakeLogins:
         pass
 
     def static(self, path):
-        return 200, b"<html>viewer</html>", "text/html"
+        return 200, VNC_HTML, "text/html"
 
 
 @pytest.fixture
@@ -259,3 +260,29 @@ def test_without_the_public_url_there_is_no_sign_in_only_the_default_account(set
     static = StaticTokenVerifier(tokens={"default-token": {"client_id": "bearer", "scopes": []}})
     srv = server.create_server(accounts, auth=static)
     assert "/connect" not in {getattr(r, "path", None) for r in srv._additional_http_routes}
+
+
+# -- the viewer -----------------------------------------------------------------------------------------------------
+
+
+def test_the_viewer_is_novnc_plus_the_paste_add_on(setup):
+    _, _, _, app = setup
+    with TestClient(app, base_url=PUBLIC) as client:
+        path, _ = authorize(client, register(client))
+        cid, _ = open_page(client, path)
+        html = client.get(f"/connect/{cid}/novnc/vnc.html?autoconnect=1")
+        assert html.status_code == 200 and html.headers["x-frame-options"] == "SAMEORIGIN"
+        assert html.content == VNC_HTML.replace(b"</head>", connect.PASTE_TAG + b"\n</head>")
+        paste = client.get(f"/connect/{cid}/novnc/paste.js")
+        assert paste.status_code == 200 and paste.headers["content-type"].startswith("text/javascript")
+        assert paste.content == connect.PASTE_JS
+        assert client.get("/connect/made-up/novnc/paste.js").status_code == 404
+
+
+def test_the_paste_add_on_types_without_logging_or_keeping_the_text():
+    source = connect.PASTE_JS.decode()
+    assert 'import UI from "./app/ui.js"' in source  # the same UI singleton vnc.html loads
+    assert "console." not in source and "localStorage" not in source and "fetch(" not in source
+    assert "MAX_CHARS = 1000" in source and "PACE_MS = 20" in source
+    keydown = source[source.index('addEventListener("keydown"') : source.index('addEventListener("paste"')]
+    assert "stopPropagation()" in keydown and "preventDefault()" not in keydown  # the browser must still paste

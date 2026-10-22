@@ -143,10 +143,15 @@ jobs:
             command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
             ls /ms-patchright | grep -q chromium
             [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]
+            python -c "from hktvmall_mcp import connect; assert b\"./app/ui.js\" in connect.PASTE_JS"
             ls /usr/share/fonts/opentype/noto/ | grep -q CJK'
           rc=0
           timeout 60 docker run --rm --network none "$image" || rc=$?
           [ "$rc" = 1 ] || { echo "ERROR: expected a refusal without HKTVMALL_LOGIN_TOKEN, got exit $rc" >&2; exit 1; }
+          # End to end, offline: the connect page, its invite step and live view in a headless Chromium, and Ctrl+V
+          # typing the clipboard into the window (scripts/paste_e2e.py; a stand-in page instead of HKTVmall's).
+          timeout 300 docker run --rm --network none -v "$PWD/scripts/paste_e2e.py:/tmp/paste_e2e.py:ro" \
+            --entrypoint python "$image" /tmp/paste_e2e.py
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Promote verified immutable refs
         env:

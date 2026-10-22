@@ -11,7 +11,7 @@ and no login window opens before an invite code or a remembered browser.
   POST /connect/{cid}/start           open a login window (layout from the person's screen)
   GET  /connect/{cid}/state           progress; adopts the session once HKTVmall says signed in
   POST /connect/{cid}/cancel
-  GET  /connect/{cid}/novnc/...       the viewer's files (noVNC, from the login service)
+  GET  /connect/{cid}/novnc/...       the viewer's files (noVNC, from the login service, plus paste.js)
   WS   /connect/{cid}/vnc             the live view of HKTVmall's page
 """
 
@@ -25,6 +25,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
@@ -54,6 +55,7 @@ PAGE_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
+PASTE_TAG = b'<script type="module" src="paste.js"></script>'
 
 
 @dataclass
@@ -294,9 +296,14 @@ class ConnectFlow:
         async def novnc(request: Request) -> Response:
             if found(request) is None:
                 return Response(status_code=404)
-            status, content, content_type = await anyio.to_thread.run_sync(
-                self.client.static, request.path_params["path"]
-            )
+            path = request.path_params["path"]
+            if path == "paste.js":
+                return Response(
+                    PASTE_JS, media_type="text/javascript", headers={"Cache-Control": "private, max-age=600"}
+                )
+            status, content, content_type = await anyio.to_thread.run_sync(self.client.static, path)
+            if path == "vnc.html" and status == 200:
+                content = _with_paste(content)
             headers = {"Cache-Control": "private, max-age=600", "X-Frame-Options": "SAMEORIGIN"}
             return Response(content, status_code=status, media_type=content_type or None, headers=headers)
 
@@ -318,6 +325,16 @@ class ConnectFlow:
                 WebSocketRoute("/{cid}/vnc", vnc),
             ]
         )
+
+
+PASTE_JS = resources.files("hktvmall_mcp").joinpath("paste.js").read_bytes()
+
+
+def _with_paste(html: bytes) -> bytes:
+    """noVNC's own vnc.html, unchanged but for the paste add-on (paste.js) loaded beside its UI."""
+    if b"</head>" not in html:
+        return html
+    return html.replace(b"</head>", PASTE_TAG + b"\n</head>", 1)
 
 
 def _public(session: ConnectSession) -> dict[str, Any]:
