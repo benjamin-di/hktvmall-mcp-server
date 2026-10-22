@@ -22,12 +22,12 @@ real basket. **You pay yourself, on HKTVmall:** the server cannot place, pay for
    included). It closes once you are signed in, and the session is saved for the server.
 
    ```sh
-   uvx --from "hktvmall-mcp[login] @ git+https://github.com/benjamin-di/hktvmall-mcp-server" hktvmall-mcp login
+   uvx --from "hktvmall-mcp[login]" hktvmall-mcp login
    ```
 
 2. **Add the server to your client.** It runs over stdio, started by the client:
 
-   - Claude Code: `claude mcp add hktvmall -- uvx --from git+https://github.com/benjamin-di/hktvmall-mcp-server hktvmall-mcp`
+   - Claude Code: `claude mcp add hktvmall -- uvx hktvmall-mcp`
    - Claude Desktop, Cursor and most other clients: add to the client's MCP configuration
 
      ```json
@@ -35,7 +35,7 @@ real basket. **You pay yourself, on HKTVmall:** the server cannot place, pay for
        "mcpServers": {
          "hktvmall": {
            "command": "uvx",
-           "args": ["--from", "git+https://github.com/benjamin-di/hktvmall-mcp-server", "hktvmall-mcp"]
+           "args": ["hktvmall-mcp"]
          }
        }
      }
@@ -44,8 +44,9 @@ real basket. **You pay yourself, on HKTVmall:** the server cannot place, pay for
 3. **Ask.** "Put milk, a dozen eggs and some bananas in my HKTVmall basket", "What did I order last month? Add the
    same toilet paper again", "Which of these olive oils is cheapest per 100 ml?".
 
-These commands run the latest code from GitHub; add `@vX.Y.Z` to the URL to stay on a release. The server is not
-on PyPI yet: a package called `hktvmall-mcp` there is not this project until this README says so.
+These commands run the latest release from PyPI ([`hktvmall-mcp`](https://pypi.org/project/hktvmall-mcp/)); write
+`hktvmall-mcp==X.Y.Z` to stay on a release, or `--from git+https://github.com/benjamin-di/hktvmall-mcp-server` for the
+latest code.
 
 ## Tools
 
@@ -108,7 +109,7 @@ are signed in, the session is saved and the window closes. A running server pick
 call.
 
 - No Chrome? Run `patchright install chromium`, then `hktvmall-mcp login --browser chromium`, both the same way as
-  in the [Quick start](#quick-start) (`uvx --from "hktvmall-mcp[login] @ git+https://github.com/benjamin-di/hktvmall-mcp-server" ...`).
+  in the [Quick start](#quick-start) (`uvx --from "hktvmall-mcp[login]" ...`).
 - HKTVmall decides how long a session lasts. When it ends, tools return `session_expired`: sign in again.
 - `hktvmall-mcp status` shows whether the saved session is signed in, without asking HKTVmall anything.
 
@@ -124,7 +125,7 @@ docker run -d --name hktvmall-mcp -p 127.0.0.1:8000:8000 \
   ghcr.io/benjamin-di/hktvmall-mcp-server:latest
 ```
 
-or `MCP_BEARER_TOKEN=... uvx --from git+https://github.com/benjamin-di/hktvmall-mcp-server hktvmall-mcp serve --port 8000`.
+or `MCP_BEARER_TOKEN=... uvx hktvmall-mcp serve --port 8000`.
 The MCP endpoint is `/mcp`;
 `/health` is open for health checks (the image's `HEALTHCHECK` runs `hktvmall-mcp health`). Put it behind your own
 HTTPS reverse proxy to reach it from outside, and give clients the bearer (`Authorization: Bearer <token>`).
