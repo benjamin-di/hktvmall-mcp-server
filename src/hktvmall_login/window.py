@@ -4,7 +4,7 @@ Used by the login service (a window on a virtual display, shown through noVNC) a
 window on the person's own screen). Nothing here clicks, types or fills: the person does every step of the login,
 HKTVmall's own checks included (``tests/test_login_safety.py`` pins that). Only HKTVmall's pages (and Facebook's,
 for Facebook login) may be shown. The login service's window is also locked down (``locked``, signin-window's
-``browser``): kiosk mode with no address bar, no passkey offers, and the image's managed policy (no offer to save the
+``browser``): kiosk mode with no address bar, and the image's managed policy (no offer to save the
 password).
 """
 
@@ -82,7 +82,7 @@ async def sign_in(
     Returns ``{email, user_agent, cookies}`` once HKTVmall's own home page, read with the same cookies, says signed
     in. ``channel="chrome"`` uses the installed Google Chrome; None uses the browser patchright installed.
     ``on_page`` hears the host of the page shown, every time the window is looked at. ``locked``: a window someone
-    else's screen shows (the login service): kiosk mode, passkeys hidden, Ctrl+T/Ctrl+N closed.
+    else's screen shows (the login service): kiosk mode, Ctrl+T/Ctrl+N closed.
     """
     from patchright.async_api import async_playwright
 

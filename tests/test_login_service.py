@@ -82,7 +82,7 @@ def test_the_runner_opens_hktvmalls_page_on_the_windows_display(monkeypatch):
     assert asyncio.run(login_app.run_browser(window)) == SESSION
     assert seen["env"]["DISPLAY"] == ":91" and seen["layout"] == "phone" and seen["profile"] in window.profiles
     assert window.state == "waiting" and window.host == "www.hktvmall.com"
-    assert seen["locked"] is True  # kiosk mode, passkeys hidden (signin-window's browser)
+    assert seen["locked"] is True  # kiosk mode, Ctrl+T/Ctrl+N closed (signin-window's browser)
 
 
 def test_no_window_opens_without_the_managed_policy(monkeypatch):
