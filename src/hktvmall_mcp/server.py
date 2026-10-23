@@ -27,6 +27,7 @@ from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
+from signin_window.client import LoginClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
@@ -38,7 +39,6 @@ from .config import Settings
 from .connect import ConnectFlow
 from .errors import AGENT_INPUT_CODES, HktvError
 from .invites import Invites
-from .login_client import LoginClient
 from .logs import ToolCallLog
 from .oauth import HktvOAuth
 from .session import LocalSession, SessionStore

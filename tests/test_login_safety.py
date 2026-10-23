@@ -24,7 +24,7 @@ def test_the_login_service_never_acts_on_the_page():
 
 
 def test_the_window_shows_only_hktvmall_or_facebook():
-    from hktvmall_login.logins import DOCUMENT_HOSTS, LOGIN_URL, allowed_document
+    from hktvmall_login.window import DOCUMENT_HOSTS, LOGIN_URL, allowed_document
 
     assert DOCUMENT_HOSTS == ("hktvmall.com", "facebook.com")
     assert LOGIN_URL == "https://www.hktvmall.com/hktv/en/login"

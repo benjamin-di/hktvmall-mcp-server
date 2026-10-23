@@ -507,12 +507,13 @@ wheels = [
 
 [[package]]
 name = "hktvmall-mcp"
-version = "0.12.3"
+version = "0.12.9"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "fastmcp" },
     { name = "platformdirs" },
+    { name = "signin-window" },
 ]
 
 [package.optional-dependencies]
@@ -532,6 +533,7 @@ requires-dist = [
     { name = "fastmcp", specifier = "==4.0.10" },
     { name = "patchright", marker = "extra == 'login'", specifier = "==1.61.2" },
     { name = "platformdirs", specifier = ">=4.3" },
+    { name = "signin-window", specifier = ">=0.1.6,<0.2" },
 ]
 provides-extras = ["login"]
 
@@ -1378,6 +1380,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
+]
+
+[[package]]
+name = "signin-window"
+version = "0.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "starlette" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/52/fe332d77dec304829a14534e13c7456504104baf12b5edf9f0cec1edc6c0/signin_window-0.1.6.tar.gz", hash = "sha256:5b50afce579b0474ef99fafb9b82049c525d1c40ecf9d3a8a322e29d17e46dd5", size = 87122, upload-time = "2026-10-23T06:31:28.629Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/1b/fa5e52fae8871b6422ef3bbfae3b44b37ccd466856124a858b4d9e7bd671/signin_window-0.1.6-py3-none-any.whl", hash = "sha256:b301a1f0b63a690779fd13c7afab3d56a0df9c1b5698fabe8f7ba13b85a97c5e", size = 36150, upload-time = "2026-10-23T06:31:25.998Z" },
 ]
 
 [[package]]

@@ -1,81 +1,86 @@
-"""The login service's lifecycle and API with a fake browser and no display: slots, one-time results, expiry,
-the bearer on every route but /health."""
+"""The login service (signin-window's, tested there) as hktvmall-login wires it: its bearer on every route but /health,
+the live view behind both the bearer and the window's token, one session handed over once, and the runner showing
+HKTVmall's login page on the window's display. No browser, no display."""
 
 import asyncio
+import time
+from pathlib import Path
 
 import pytest
+from signin_window.service import Window, Windows, build_app
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from hktvmall_login.app import build_app
-from hktvmall_login.logins import Logins, session_cookies
+from hktvmall_login import app as login_app
+from hktvmall_login.window import session_cookies
 
 TOKEN = "x" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
+SESSION = {"email": "alex@example.com", "user_agent": "UA", "cookies": []}
 
 
-class Clock:
-    now = 1000.0
-
-    def __call__(self):
-        return self.now
-
-
-def make_logins(clock, signed_in=None):
-    async def browser(login, logins):
-        login.state = "waiting"
-        while True:
-            if signed_in is not None and signed_in.get(login.id):
-                logins.proven(login, {"email": "alex@example.com", "user_agent": "UA", "cookies": []})
-                return
+def client(release: dict) -> TestClient:
+    async def browser(window):
+        window.waiting("www.hktvmall.com")
+        while not release.get(window.id):
             await asyncio.sleep(0.01)
+        return SESSION
 
-    logins = Logins(slots=1, minutes=15, browser=browser, clock=clock)
-    logins._start_display = lambda login: None  # no Xvfb in tests
-    logins._stop_display = lambda login: login.procs.clear()
-    return logins
-
-
-def test_every_route_but_health_needs_the_bearer(tmp_path):
-    app = build_app(make_logins(Clock()), token=TOKEN, novnc_dir=tmp_path)
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        assert client.post("/logins", json={}).status_code == 401
-        assert client.post("/logins", json={}, headers={"Authorization": "Bearer wrong"}).status_code == 401
-        assert client.get("/logins/abc", headers=AUTH).status_code == 404
-        from starlette.websockets import WebSocketDisconnect
-
-        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/logins/abc/vnc"):
-            pass  # refused before the handshake: no bearer
+    windows = Windows(browser, slots=1)
+    windows.start_display = lambda window: None  # type: ignore[method-assign]
+    windows.stop_display = lambda window: window.procs.clear()  # type: ignore[method-assign]
+    return TestClient(build_app(windows, token=TOKEN, novnc_dir=Path("/nonexistent"), direct_view=False))
 
 
-def test_one_slot_one_result_then_closed(tmp_path):
-    clock, signed_in = Clock(), {}
-    app = build_app(make_logins(clock, signed_in), token=TOKEN, novnc_dir=tmp_path)
-    with TestClient(app) as client:
-        first = client.post("/logins", json={"layout": "phone"}, headers=AUTH)
-        assert first.status_code == 201 and first.json()["layout"] == "phone"
-        login_id = first.json()["id"]
-        assert client.post("/logins", json={}, headers=AUTH).status_code == 503  # the only slot is taken
-        assert client.post(f"/logins/{login_id}/result", headers=AUTH).status_code == 409  # not signed in yet
-        signed_in[login_id] = True
-        for _ in range(100):
-            if client.get(f"/logins/{login_id}", headers=AUTH).json()["state"] == "signed_in":
-                break
-        result = client.post(f"/logins/{login_id}/result", headers=AUTH)
+def poll(http: TestClient, window_id: str, until: str) -> None:
+    for _ in range(300):
+        if http.get(f"/logins/{window_id}", headers=AUTH).json().get("state") == until:
+            return
+        time.sleep(0.01)
+    raise AssertionError(until)
+
+
+def test_every_route_but_health_needs_the_bearer_and_the_view_needs_both():
+    with client({}) as http:
+        assert http.get("/health").status_code == 200
+        assert http.post("/logins", json={}).status_code == 401
+        started = http.post("/logins", json={"layout": "phone"}, headers=AUTH).json()
+        poll(http, started["id"], "waiting")
+        assert http.get(f"/view/{started['id']}?t={started['view_token']}").status_code == 401  # no direct view
+        with (
+            pytest.raises(WebSocketDisconnect),
+            http.websocket_connect(f"/logins/{started['id']}/vnc?t={started['view_token']}"),
+        ):
+            pass  # the token alone opens nothing
+
+
+def test_one_slot_one_result_then_closed():
+    release: dict = {}
+    with client(release) as http:
+        window_id = http.post("/logins", json={}, headers=AUTH).json()["id"]
+        assert http.post("/logins", json={}, headers=AUTH).status_code == 503  # the only slot is taken
+        assert http.post(f"/logins/{window_id}/result", headers=AUTH).status_code == 409  # not signed in yet
+        release[window_id] = True
+        poll(http, window_id, "signed_in")
+        result = http.post(f"/logins/{window_id}/result", headers=AUTH)
         assert result.status_code == 200 and result.json()["email"] == "alex@example.com"
-        assert client.post(f"/logins/{login_id}/result", headers=AUTH).status_code == 404  # once only
-        assert client.post("/logins", json={}, headers=AUTH).status_code == 201  # the slot is free again
+        assert http.post(f"/logins/{window_id}/result", headers=AUTH).status_code == 409  # once only
+        assert http.post("/logins", json={}, headers=AUTH).status_code == 201  # the slot is free again
 
 
-def test_logins_past_the_limit_end(tmp_path):
-    clock = Clock()
-    logins = make_logins(clock)
-    app = build_app(logins, token=TOKEN, novnc_dir=tmp_path)
-    with TestClient(app) as client:
-        login_id = client.post("/logins", json={}, headers=AUTH).json()["id"]
-        clock.now += 16 * 60
-        assert client.get(f"/logins/{login_id}", headers=AUTH).status_code == 404
-        assert client.post("/logins", json={}, headers=AUTH).status_code == 201
+def test_the_runner_opens_hktvmalls_page_on_the_windows_display(monkeypatch):
+    seen = {}
+
+    async def sign_in(**kwargs):
+        seen.update(kwargs)
+        kwargs["on_page"]("www.hktvmall.com")
+        return SESSION
+
+    monkeypatch.setattr(login_app, "sign_in", sign_in)
+    window = Window("w" * 24, "phone", 1, 0.0, 60.0)
+    assert asyncio.run(login_app.run_browser(window)) == SESSION
+    assert seen["env"]["DISPLAY"] == ":91" and seen["layout"] == "phone" and seen["profile"] in window.profiles
+    assert window.state == "waiting" and window.host == "www.hktvmall.com"
 
 
 def test_session_cookies_keep_hktvmall_only_in_the_snapshot_shape():

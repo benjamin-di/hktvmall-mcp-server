@@ -94,25 +94,21 @@ def test_network_io_only_in_site():
                 mods |= {a.name for a in node.names}
             elif isinstance(node, ast.ImportFrom) and node.module:
                 mods.add(node.module)
-        if f.name not in ("site.py", "session.py", "login_client.py", "cli.py"):
+        if f.name not in ("site.py", "session.py", "cli.py"):
             assert not mods & NETWORK, f"{f.name} imports {mods & NETWORK}"
         if f.name == "cli.py":  # `hktvmall-mcp health` asks this server's own /health, never HKTVmall
             assert mods & NETWORK <= {"urllib.request"}
         if f.name == "session.py":  # builds cookie jars, never sends
             assert mods & NETWORK <= {"http.cookiejar"}
-        if f.name == "login_client.py":  # the internal login service only (see the test below)
-            assert mods & NETWORK <= {"urllib.request", "urllib.error"}
 
 
 def test_the_login_client_reaches_only_the_configured_internal_service():
-    """Its URLs are HKTVMALL_LOGIN_URL (plain http, host:port, checked at startup) plus fixed paths."""
+    """The client is signin-window's (its URLs are the base URL plus fixed paths and validated ids, tested there); the
+    base is HKTVMALL_LOGIN_URL, plain http, host:port, checked at startup."""
     from hktvmall_mcp.config import ConfigError, Settings
 
-    text = (SRC / "login_client.py").read_text(encoding="utf-8")
-    assert "hktvmall.com" not in text and "https://" not in text
-    paths = set(re.findall(r'f?"(/[a-z][a-z/{}._()]*)', text))
-    assert paths <= {"/logins", "/logins/{self._id(login_id)}", "/logins/{self._id(login_id)}/result",
-                     "/logins/{self._id(login_id)}/vnc", "/novnc/{path}"}, paths  # fmt: skip
+    assert not (SRC / "login_client.py").exists()
+    assert "from signin_window.client import LoginClient" in (SRC / "server.py").read_text(encoding="utf-8")
     base = {"HKTVMALL_SESSION_SNAPSHOT": "/s/x.json", "HKTVMALL_EXPECTED_EMAIL": "a@b.c"}
     for bad in ("https://evil.example", "http://hktvmall-mcp-login:8080/x", "http://user@host:80", "file:///x"):
         try:

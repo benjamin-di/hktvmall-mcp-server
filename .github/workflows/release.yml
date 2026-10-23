@@ -139,7 +139,7 @@ jobs:
           docker run --rm --network none --entrypoint sh "$image" -c '
             set -e
             [ "$(id -u)" = 1000 ]
-            python -c "import hktvmall_login.app, hktvmall_login.logins, hktvmall_login.window, patchright"
+            python -c "import hktvmall_login.app, hktvmall_login.window, signin_window.service, patchright"
             command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
             ls /ms-patchright | grep -q chromium
             [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]

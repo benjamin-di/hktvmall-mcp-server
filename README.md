@@ -149,7 +149,8 @@ codes are rate-limited per client address from `X-Forwarded-For`: the reverse pr
 header with the client's address, not append to it.
 
 Pasting works in the login window: Ctrl+V (Cmd+V on a Mac) types the clipboard's text into HKTVmall's page, so a
-password manager's copy can be used (a small add-on to noVNC's viewer, `src/hktvmall_mcp/paste.js`; up to 1000
+password manager's copy can be used (a small add-on to noVNC's viewer from
+[signin-window](https://github.com/benjamin-di/signin-window), the library the login window is built on; up to 1000
 characters the window's keyboard has, which covers ASCII; the text is never logged or kept). On a phone, noVNC's
 keyboard button opens the phone's keyboard, which pastes as usual. Passkeys do not work in a remote window: log in
 with a password or a code.

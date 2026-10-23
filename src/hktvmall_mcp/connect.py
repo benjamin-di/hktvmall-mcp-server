@@ -25,10 +25,11 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
+from signin_window.client import LoginBusy, LoginClient, LoginUnavailable
+from signin_window.relay import PASTE_JS, with_paste
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
@@ -38,7 +39,6 @@ from starlette.websockets import WebSocket
 from .accounts import ACCOUNT_ID, Accounts, mask_email
 from .errors import HktvError
 from .invites import Invites
-from .login_client import LoginClient, LoginUnavailable
 
 if TYPE_CHECKING:
     from .oauth import HktvOAuth
@@ -55,7 +55,6 @@ PAGE_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
-PASTE_TAG = b'<script type="module" src="paste.js"></script>'
 
 
 @dataclass
@@ -67,6 +66,7 @@ class ConnectSession:
     invite: str | None = None
     state: str = "new"  # new, ready, starting, waiting, connected, wrong_account, busy, failed, expired, cancelled
     login_id: str | None = None
+    view_token: str | None = field(default=None, repr=False)  # the window's live view (signin-window's service)
     account: str | None = None
     host: str = ""
     redirect: str | None = None
@@ -161,11 +161,12 @@ class ConnectFlow:
     def start(self, session: ConnectSession, layout: str) -> None:
         if session.login_id is not None or session.state != "ready":
             return
-        login = self.client.start(layout if layout in ("phone", "desktop") else "desktop")
-        if login is None:
+        try:
+            login = self.client.start(layout if layout in ("phone", "desktop") else "desktop")
+        except LoginBusy:
             session.state = "busy"
             return
-        session.login_id, session.state = login["id"], "starting"
+        session.login_id, session.view_token, session.state = login["id"], login["view_token"], "starting"
 
     def advance(self, session: ConnectSession) -> None:
         """Follow the login; once HKTVmall says signed in, take the session, connect the account and send the
@@ -173,7 +174,7 @@ class ConnectFlow:
         if session.login_id is None or session.state not in ("starting", "waiting"):
             return
         login = self.client.state(session.login_id)
-        if login is None:
+        if login.get("state") == "unknown":
             session.state = "expired"
             return
         session.host = str(login.get("host") or "")
@@ -212,9 +213,12 @@ class ConnectFlow:
         log.info("connect: account %s connected", account_id)
 
     def cancel(self, session: ConnectSession) -> None:
-        if session.login_id and session.state in ("starting", "waiting"):
+        # Close the window whatever the last poll said: the service ignores a window that has already ended, and a
+        # cancel never waits for a state poll to have seen the window open.
+        if session.login_id and session.state != "connected":
             self.client.close(session.login_id)
-        session.state = "cancelled"
+        if session.state != "connected":
+            session.state = "cancelled"
 
     # -- HTTP -------------------------------------------------------------------------------
 
@@ -303,17 +307,17 @@ class ConnectFlow:
                 )
             status, content, content_type = await anyio.to_thread.run_sync(self.client.static, path)
             if path == "vnc.html" and status == 200:
-                content = _with_paste(content)
+                content = with_paste(content)
             headers = {"Cache-Control": "private, max-age=600", "X-Frame-Options": "SAMEORIGIN"}
             return Response(content, status_code=status, media_type=content_type or None, headers=headers)
 
         async def vnc(ws: WebSocket) -> None:
             session = self._session(ws.path_params["cid"])
-            if session is None or session.login_id is None or session.state not in ("starting", "waiting"):
+            if session is None or not session.login_id or not session.view_token or session.state != "waiting":
                 await ws.close(code=4404)
                 return
             await ws.accept(subprotocol="binary" if "binary" in ws.scope.get("subprotocols", []) else None)
-            await self.client.bridge(session.login_id, ws)
+            await self.client.bridge(session.login_id, session.view_token, ws)
 
         return Starlette(
             routes=[
@@ -325,16 +329,6 @@ class ConnectFlow:
                 WebSocketRoute("/{cid}/vnc", vnc),
             ]
         )
-
-
-PASTE_JS = resources.files("hktvmall_mcp").joinpath("paste.js").read_bytes()
-
-
-def _with_paste(html: bytes) -> bytes:
-    """noVNC's own vnc.html, unchanged but for the paste add-on (paste.js) loaded beside its UI."""
-    if b"</head>" not in html:
-        return html
-    return html.replace(b"</head>", PASTE_TAG + b"\n</head>", 1)
 
 
 def _public(session: ConnectSession) -> dict[str, Any]:

@@ -32,9 +32,8 @@ from pathlib import Path
 
 import uvicorn
 from patchright.async_api import async_playwright
+from signin_window.service import Window, Windows, build_app
 
-from hktvmall_login.app import build_app
-from hktvmall_login.logins import Login, Logins
 from hktvmall_mcp.auth import require_bearer
 from hktvmall_mcp.config import Settings
 from hktvmall_mcp.invites import Invites
@@ -53,7 +52,7 @@ FIELD_PAGE = (
 BEARER, LOGIN_TOKEN = "e2e-bearer-0123456789abcdef", "e2e-login-token-0123456789abcdef0123"
 CALLBACK = "http://127.0.0.1:9/callback"  # an assistant on this computer; never called
 
-LOGINS: Logins | None = None
+WINDOWS: Windows | None = None
 
 
 def free_port() -> int:
@@ -111,38 +110,40 @@ def connect_page(base: str) -> str:
 
 
 async def main() -> int:
-    global LOGINS
+    global WINDOWS
     state = Path(tempfile.mkdtemp(prefix="hktvmall-e2e-"))
     login_port, mcp_port = free_port(), free_port()
     remote: dict = {}
 
     async with async_playwright() as pw:
 
-        async def stand_in(login: Login, logins: Logins) -> None:
-            """Instead of HKTVmall's page: one text field, in a headed Chromium on the login's display."""
+        async def stand_in(window: Window) -> None:
+            """Instead of HKTVmall's page: one text field, in a headed Chromium filling the window's display (with no
+            window manager, keys go to the window under the pointer)."""
+            width, height = window.size
             browser = await pw.chromium.launch(
-                headless=False, env={**os.environ, "DISPLAY": login.display}, args=["--window-position=0,0"]
+                headless=False, env=window.env(), args=["--window-position=0,0", f"--window-size={width},{height}"]
             )
             try:
-                page = await browser.new_page(viewport={"width": 1000, "height": 600})
+                page = await browser.new_page(no_viewport=True)
                 await page.set_content(FIELD_PAGE)
                 await page.focus("#f")
                 remote["page"] = page
-                login.state, login.host = "waiting", "www.hktvmall.com"
-                await asyncio.Event().wait()  # until the login is closed
+                window.waiting("www.hktvmall.com")
+                await asyncio.Event().wait()  # until the window is closed
             finally:
                 remote.pop("page", None)
                 await browser.close()
 
-        LOGINS = logins = Logins(
+        WINDOWS = windows = Windows(
+            stand_in,
             slots=1,
             minutes=5,
             xvfb=os.environ.get("HKTVMALL_LOGIN_XVFB") or "Xvfb",
             x11vnc=os.environ.get("HKTVMALL_LOGIN_X11VNC") or "x11vnc",
-            browser=stand_in,
         )
         novnc = Path(os.environ.get("HKTVMALL_LOGIN_NOVNC") or "/opt/novnc")
-        await serve(build_app(logins, token=LOGIN_TOKEN, novnc_dir=novnc), login_port)
+        await serve(build_app(windows, token=LOGIN_TOKEN, novnc_dir=novnc, direct_view=False), login_port)
 
         base = f"http://127.0.0.1:{mcp_port}"
         settings = Settings.from_env(
@@ -202,11 +203,14 @@ async def main() -> int:
 
         await page.close(run_before_unload=True)  # pagehide sends the cancel
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
-            if not logins._logins:
+            if not open_windows(windows):
                 break
             await asyncio.sleep(0.1)
-        if logins._logins:
+        if open_windows(windows):
             print("FAIL: closing the page did not close the login window", file=sys.stderr)
+            for w in list(windows._windows.values()):  # did the cancel arrive (cancelled), or did the window not end
+                print(f"  window {w.id[:6]}: state={w.state} cancelled={w.cancelled.is_set()} ended={w.ended_at} "
+                      f"error={w.error}", file=sys.stderr)  # fmt: skip
             return 1
         print("closing the page closed the login window")
         await viewer.close()
@@ -214,12 +218,16 @@ async def main() -> int:
     return 0
 
 
+def open_windows(windows: Windows) -> list[Window]:
+    return [w for w in list(windows._windows.values()) if w.state in ("starting", "waiting")]
+
+
 async def run() -> int:
     try:
         return await main()
     finally:
-        for login_id in list(LOGINS._logins) if LOGINS else []:
-            await LOGINS.close(login_id)  # never leave a display or browser behind
+        if WINDOWS is not None:
+            await WINDOWS.close_all()  # never leave a display or browser behind
 
 
 if __name__ == "__main__":

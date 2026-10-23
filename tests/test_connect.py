@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from signin_window.client import LoginBusy
+from signin_window.relay import PASTE_TAG
 from starlette.testclient import TestClient
 from test_accounts import ALEX, cookies
 
@@ -34,13 +36,13 @@ class FakeLogins:
 
     def start(self, layout):
         if self.busy:
-            return None
+            raise LoginBusy("busy")
         login_id = f"login-{len(self.logins):012d}"
         self.logins[login_id] = {"id": login_id, "state": "waiting", "host": "www.hktvmall.com", "layout": layout}
-        return self.logins[login_id]
+        return {**self.logins[login_id], "view_token": "v" * 24}
 
     def state(self, login_id):
-        return self.logins.get(login_id)
+        return self.logins.get(login_id, {"state": "unknown"})
 
     def sign_in(self, email=ALEX, session="alex-session"):
         login = list(self.logins.values())[-1]
@@ -55,7 +57,7 @@ class FakeLogins:
         return login.pop("result")
 
     def close(self, login_id):
-        pass
+        self.closed = [*getattr(self, "closed", []), login_id]
 
     def static(self, path):
         return 200, VNC_HTML, "text/html"
@@ -272,7 +274,7 @@ def test_the_viewer_is_novnc_plus_the_paste_add_on(setup):
         cid, _ = open_page(client, path)
         html = client.get(f"/connect/{cid}/novnc/vnc.html?autoconnect=1")
         assert html.status_code == 200 and html.headers["x-frame-options"] == "SAMEORIGIN"
-        assert html.content == VNC_HTML.replace(b"</head>", connect.PASTE_TAG + b"\n</head>")
+        assert html.content == VNC_HTML.replace(b"</head>", PASTE_TAG + b"\n</head>")
         paste = client.get(f"/connect/{cid}/novnc/paste.js")
         assert paste.status_code == 200 and paste.headers["content-type"].startswith("text/javascript")
         assert paste.content == connect.PASTE_JS
@@ -286,3 +288,17 @@ def test_the_paste_add_on_types_without_logging_or_keeping_the_text():
     assert "MAX_CHARS = 1000" in source and "PACE_MS = 20" in source
     keydown = source[source.index('addEventListener("keydown"') : source.index('addEventListener("paste"')]
     assert "stopPropagation()" in keydown and "preventDefault()" not in keydown  # the browser must still paste
+
+
+@pytest.mark.parametrize("seen", ["starting", "waiting", "expired", "failed"])
+def test_a_cancel_closes_the_window_whatever_the_last_poll_saw(seen):
+    """The page's cancel must not depend on a state poll having seen the window open (it may not have yet)."""
+    logins = FakeLogins()
+    flow = connect.ConnectFlow.__new__(connect.ConnectFlow)
+    flow.client = logins
+    session = connect.ConnectSession("c" * 32, "req", 0.0, login_id="login-000000000000", state=seen)
+    flow.cancel(session)
+    assert logins.closed == ["login-000000000000"] and session.state == "cancelled"
+    done = connect.ConnectSession("d" * 32, "req", 0.0, login_id="login-000000000001", state="connected")
+    flow.cancel(done)
+    assert logins.closed == ["login-000000000000"] and done.state == "connected"  # a connected session stays
