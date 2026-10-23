@@ -77,10 +77,20 @@ def test_the_runner_opens_hktvmalls_page_on_the_windows_display(monkeypatch):
         return SESSION
 
     monkeypatch.setattr(login_app, "sign_in", sign_in)
+    monkeypatch.setattr(login_app, "policy_installed", lambda: True)
     window = Window("w" * 24, "phone", 1, 0.0, 60.0)
     assert asyncio.run(login_app.run_browser(window)) == SESSION
     assert seen["env"]["DISPLAY"] == ":91" and seen["layout"] == "phone" and seen["profile"] in window.profiles
     assert window.state == "waiting" and window.host == "www.hktvmall.com"
+    assert seen["locked"] is True  # kiosk mode, passkeys hidden (signin-window's browser)
+
+
+def test_no_window_opens_without_the_managed_policy(monkeypatch):
+    monkeypatch.setattr(login_app, "policy_installed", lambda: False)
+    with pytest.raises(login_app.PolicyMissing):
+        asyncio.run(login_app.run_browser(Window("w" * 24, "desktop", 1, 0.0, 60.0)))
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile.login").read_text()
+    assert "python -m signin_window.browser install-policy" in dockerfile
 
 
 def test_session_cookies_keep_hktvmall_only_in_the_snapshot_shape():

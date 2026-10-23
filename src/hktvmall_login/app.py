@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from signin_window.browser import policy_installed
 from signin_window.service import Window, Windows, build_app
 
 from .window import sign_in
@@ -22,14 +23,22 @@ from .window import sign_in
 log = logging.getLogger("hktvmall-login")
 
 
+class PolicyMissing(Exception):
+    """The image's managed Chromium policy is not installed (``python -m signin_window.browser install-policy``)."""
+
+
 async def run_browser(window: Window) -> dict[str, Any]:
-    """HKTVmall's login page in a throwaway profile on the window's display; the proven session."""
+    """HKTVmall's login page in a throwaway, locked-down browser on the window's display; the proven session."""
+    if not policy_installed():
+        log.error("no sign-in window: the managed Chromium policy is not installed")
+        raise PolicyMissing()
     return await sign_in(
         profile=window.temp_profile("hktv-login-"),
         layout=window.layout,
         env=window.env(),
         extra_args=("--window-position=0,0",),
         on_page=window.waiting,
+        locked=True,
     )
 
 
@@ -40,6 +49,8 @@ def main() -> None:
     token = (os.environ.get("HKTVMALL_LOGIN_TOKEN") or "").strip()
     if len(token) < 32:
         raise SystemExit("HKTVMALL_LOGIN_TOKEN (at least 32 characters) is required")
+    if not policy_installed():
+        log.error("the managed Chromium policy is not installed: sign-in windows stay closed")
     windows = Windows(
         run_browser,
         slots=int(os.environ.get("HKTVMALL_LOGIN_SLOTS") or 2),
