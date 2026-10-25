@@ -152,6 +152,7 @@ jobs:
           # typing the clipboard into the window (scripts/paste_e2e.py; a stand-in page instead of HKTVmall's).
           timeout 300 docker run --rm --network none -v "$PWD/scripts/paste_e2e.py:/tmp/paste_e2e.py:ro" \
             --entrypoint python "$image" /tmp/paste_e2e.py
+          bash scripts/check-maintenance-image.sh "$image"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Promote verified immutable refs
         env:

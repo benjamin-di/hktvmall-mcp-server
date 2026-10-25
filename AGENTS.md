@@ -33,3 +33,11 @@ HKTVmall's responses, with invented values.
 
 A `vX.Y.Z` tag whose version matches `pyproject.toml` runs `.github/workflows/release.yml`: the tests, then both
 images (smoke-tested, pushed to GHCR, promoted from an immutable `:sha-<12>` candidate) and a GitHub release.
+
+## Optional maintenance boundary
+
+`src/hktvmall_maintenance` owns explicit Linux credential maintenance, independently of
+the human window and reader. Preserve positive signed-out evidence, attempt
+accounting, durable holds, account checks and snapshot compatibility. Generic
+mechanics belong in signin-window; runtime credentials and planner identities
+belong in deployment configuration. See [Account maintenance](docs/MAINTENANCE.md).

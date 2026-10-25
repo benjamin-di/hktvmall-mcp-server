@@ -1,0 +1,9 @@
+key = "hktvmall"
+login_url = "https://www.hktvmall.com/hktv/en/login"
+warm_url = "https://www.hktvmall.com/hktv/en/"
+
+[launch]
+locale = "en-GB"
+timezone_id = "UTC"
+accept_language = "en-GB,en;q=0.9"
+args = []

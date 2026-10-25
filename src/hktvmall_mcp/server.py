@@ -28,6 +28,7 @@ from fastmcp.tools import ToolResult
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 from signin_window.client import LoginClient
+from signin_window.sessions import refresh_due
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
@@ -492,10 +493,14 @@ class HktvService:
         if self.session.never_signed_in():
             return False
         now = self.state.now()
-        if failed_at is not None and now - failed_at < min(KEEPALIVE_RETRY, self.settings.keepalive_seconds):
-            return False
-        last = self.state.get("last_keepalive_at")
-        return self.session.awaiting_verification() or last is None or now - last >= self.settings.keepalive_seconds
+        return refresh_due(
+            self.state.get("last_keepalive_at"),
+            now=now,
+            interval=self.settings.keepalive_seconds,
+            failed_at=failed_at,
+            retry_after=KEEPALIVE_RETRY,
+            unverified=self.session.awaiting_verification(),
+        )
 
     def status(self, check: bool) -> dict[str, Any]:
         account = DEFAULT if self.account_id == DEFAULT else mask_email(self.session.expected_email)

@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
-from signin_window.browser import LAUNCH_ARGS, harden
+from signin_window.browser import LAUNCH_ARGS, browser_environment, harden
 from signin_window.hosts import top_level
 
 ORIGIN = "https://www.hktvmall.com"
@@ -96,7 +96,7 @@ async def sign_in(
             locale="en-HK",
             timezone_id="Asia/Hong_Kong",
             user_agent=LAYOUTS[layout]["user_agent"],
-            env=dict(env) if env is not None else None,
+            env=browser_environment(env),
             args=[
                 f"--window-size={width},{height}",
                 *extra_args,

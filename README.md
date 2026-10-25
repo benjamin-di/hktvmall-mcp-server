@@ -223,3 +223,5 @@ See [CONTRIBUTING.md](https://github.com/benjamin-di/hktvmall-mcp-server/blob/ma
 ## License
 
 [MIT](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/LICENSE).
+
+Optional operator-owned account upkeep is documented in [Account maintenance](docs/MAINTENANCE.md).
