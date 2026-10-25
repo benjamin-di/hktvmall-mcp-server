@@ -1,6 +1,6 @@
 [project]
 name = "hktvmall-mcp"
-version = "0.13.0"
+version = "0.13.2"
 description = "MCP server for HKTVmall (Hong Kong): search, product cards, order history and basket edits read back from HKTVmall; never pays"
 readme = "README.md"
 license = "MIT"
@@ -62,7 +62,7 @@ build-backend = "hatchling.build"
 packages = ["src/hktvmall_maintenance", "src/hktvmall_mcp", "src/hktvmall_login"]
 
 [project.scripts]
-hktvmall-mcp-maintenance = "hktvmall_maintenance.cli:main"
+hktvmall-mcp-maintenance = "hktvmall_maintenance.cli:run"
 hktvmall-mcp = "hktvmall_mcp.cli:main"
 
 [tool.pytest.ini_options]
