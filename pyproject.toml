@@ -1,6 +1,6 @@
 [project]
 name = "hktvmall-mcp"
-version = "0.13.2"
+version = "0.13.3"
 description = "MCP server for HKTVmall (Hong Kong): search, product cards, order history and basket edits read back from HKTVmall; never pays"
 readme = "README.md"
 license = "MIT"
@@ -26,7 +26,7 @@ dependencies = [
     # The per-user state folder for local use (already in the lock through FastMCP).
     "platformdirs>=4.3",
     # The login window's service, its client and the paste add-on.
-    "signin-window[automation]>=0.4.2,<0.5",
+    "signin-window[automation]>=0.4.4,<0.5",
 ]
 
 [project.urls]

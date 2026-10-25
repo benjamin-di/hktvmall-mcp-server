@@ -23,7 +23,7 @@ BrowserLaunchConfig = BrowserLaunchSpec
 
 class HktvmallTargetSpec(FrozenModel):
     key: Literal["hktvmall"]
-    secret_ref: str = Field(default="", pattern=r"^(?:op://[^/\r\n{}]+/[^/\r\n{}]+)?$")
+    secret_ref: str = Field(default="", max_length=2048, pattern=r"^[^\r\n\x00{}]*$")
     login_url: Literal["https://www.hktvmall.com/hktv/en/login"]
     warm_url: Literal["https://www.hktvmall.com/hktv/en/"]
     launch: BrowserLaunchSpec

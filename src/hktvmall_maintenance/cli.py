@@ -17,6 +17,7 @@ import signal
 from datetime import UTC, datetime
 from pathlib import Path
 
+from signin_window.automation.secrets import load_credential_reader
 from signin_window.leases import LeaseKind, ordered_file_lease
 from signin_window.sessions import AttemptBudget
 
@@ -76,10 +77,18 @@ def build_keeper(root: Path, export_dir: Path, expected_email: str, reference: s
         missing = []
         if not reference:
             missing.append(Requirement.CREDENTIAL_REFERENCE)
-        if shutil.which("op") is None:
-            missing.append(Requirement.OP_CLI)
-        if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "").strip():
-            missing.append(Requirement.OP_SERVICE_TOKEN)
+        selected_reader = os.environ.get(PREFIX + "_CREDENTIAL_READER", "").strip()
+        if selected_reader:
+            try:
+                if not load_credential_reader(selected_reader).available:
+                    missing.append(Requirement.CREDENTIAL_READER)
+            except Exception:
+                missing.append(Requirement.CREDENTIAL_READER)
+        else:
+            if shutil.which("op") is None:
+                missing.append(Requirement.OP_CLI)
+            if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "").strip():
+                missing.append(Requirement.OP_SERVICE_TOKEN)
         if ctypes.util.find_library("Xtst") is None:
             missing.append(Requirement.NATIVE_INPUT)
         if policy == "planner" and planner is None:

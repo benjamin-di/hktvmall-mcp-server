@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -31,7 +32,7 @@ from signin_window.automation.browser import BrowserSession as PatchrightMintCon
 from signin_window.automation.plans import VisionPlanner
 from signin_window.automation.pointer import X11Pointer
 from signin_window.automation.recaptcha import RecaptchaImageSelectSolver
-from signin_window.automation.secret_filler import OpSecretFiller
+from signin_window.automation.secret_filler import configured_credential_filler
 from signin_window.state import atomic_private_write
 
 from .config import HktvmallTargetSpec
@@ -103,7 +104,9 @@ class HktvmallTargetBrowser:
         self._expected_email = expected_email.strip().casefold()
         self._mail = mail
         self._evidence_dir = evidence_dir
-        self._secrets = secrets or OpSecretFiller()
+        self._secrets = secrets or configured_credential_filler(
+            os.environ.get("HKTVMALL_MAINTENANCE_CREDENTIAL_READER", "")
+        )
         self._utc_now = utc_now
         self._clock = monotonic
         self._counts = {LOGIN_PATH: 0, OTP_REQUEST_PATH: 0, OTP_VERIFY_PATH: 0}
