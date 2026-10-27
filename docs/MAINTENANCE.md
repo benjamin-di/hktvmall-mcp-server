@@ -1,5 +1,7 @@
-# Optional account maintenance
+# Account maintenance and required connection controls
 
+Stored credential automation is optional. Hosted OIDC management and persistent
+connection controls apply regardless of whether credential automation is enabled.
 The reader and human sign-in window work without credential automation.
 `hktvmall-mcp-maintenance` is a separate, explicit Linux worker for one operator-owned
 HKTVmall account. It starts no scheduler. Run it in the login-browser image
@@ -48,6 +50,20 @@ sharing it. Never copy a profile while Chromium is running. Rehearse adoption
 and rollback with synthetic state; rollback must preserve the latest accounting.
 The human window's own further-account keeper remains independent and never
 submits credentials.
+
+## Connection-owner suspension
+
+When exposing Connections for the default account, mount the same private writable
+`HKTVMALL_CONNECTIONS_CONTROLS_DIR` into reader and maintenance. A configured directory must exist before startup;
+a missing mount must not create new authority. `default.json` retains the manager's issuer/subject and durable epoch.
+Disconnect blocks new upkeep/minting and final snapshot publication under the shared lock. A disconnect followed by
+fresh owner recovery cannot admit an older run's late snapshot. Profiles, snapshots, holds and consumed attempts remain retained.
+Only explicit fresh owner connection actions permit access again; deployment never clears the barrier.
+
+`keep` reports the closed `disconnected` outcome when access is stopped. `status` includes `connection_state` and
+reports intentional suspension separately from provider health, retaining freshness and hold facts. Monitoring
+should recognize deliberate suspension rather than paging for an intentionally inactive account. This controls this
+server's access, not provider-wide sessions or agent permissions.
 
 ## Verification
 
@@ -103,3 +119,28 @@ The backend's `available` property must not read secrets or contact a provider.
 Only the requested username, password or generated TOTP is resolved just in time.
 Origin checks, error redaction, durable budgets and holds apply to all backends.
 A selected reader's failure never falls back to the ambient 1Password identity.
+
+## Human recovery in the existing custodian
+
+Run `python -m hktvmall_maintenance.human` alongside upkeep in the same container, hostname and PID namespace.
+It uses the existing `HKTVMALL_MAINTENANCE_ROOT`, `HKTVMALL_MAINTENANCE_EXPORT_DIR`,
+`HKTVMALL_MAINTENANCE_EXPECTED_EMAIL`, `HKTVMALL_CONNECTIONS_CONTROLS_DIR` and private `HKTVMALL_LOGIN_TOKEN`.
+It listens privately on port 8081 (`HKTVMALL_DEFAULT_LOGIN_PORT`) and exposes the standard signin-window backend,
+with no direct viewer. It needs the login image's Chromium, Xvfb, x11vnc, noVNC and installed browser policy; it
+receives no credential reader, mailbox or planner configuration. A supervisor must drain both it and upkeep if either
+child stops. The reader selects it through `HKTVMALL_DEFAULT_LOGIN_URL` and retains its read-only snapshot mount.
+
+The manager chooses the account in HKTVmall's own window; only the configured expected account can commit. The
+existing durable profile lease spans the window. A cold candidate preserves accepted state during failed, wrong-account
+or cancelled attempts. Publication exchanges the closed candidate profile atomically and writes the single-file
+snapshot under a private commit journal and shared admission marker. Startup and every upkeep run recover PREPARED
+commits to the previous pair; COMMITTED records finish cleanup without republishing an old epoch. No native warm-up
+runs while recovery is outstanding. `python -m hktvmall_maintenance.human --recover-only` performs the same recovery
+under the profile lease. Preserve the journal, backups, controls and accounting on rollback.
+
+Positive native `SessionDead` observations are projected as a private closed hint in the shared controls directory,
+bound to the accepted snapshot generation and captured control epoch. The connections page can therefore report
+sign-in needed after a reader restart without deleting the accepted snapshot or making provider HTTP requests.
+A cancelled recovery retains that fact; a newer verified publication supersedes it. Outcome labels such as a hold,
+missing host requirements or exhausted budget alone never manufacture signed-out evidence. An older native run
+cannot overwrite a newer owner action's health hint.

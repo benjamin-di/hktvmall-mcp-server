@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from importlib import resources
 from typing import Annotated, Any, Literal, TypeVar
 
@@ -22,7 +23,7 @@ from fastmcp import FastMCP
 from fastmcp.apps.config import UI_EXTENSION_ID
 from fastmcp.exceptions import ToolError
 from fastmcp.exceptions import ValidationError as ArgumentError
-from fastmcp.server.dependencies import get_access_token, get_context
+from fastmcp.server.dependencies import get_access_token, get_context, get_http_request
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
 from pydantic import BaseModel, ConfigDict, Field
@@ -615,8 +616,20 @@ def default_session(settings: Settings) -> SessionStore:
     return LocalSession(settings.session_path)
 
 
-def create_server(target: HktvService | Accounts, *, auth: Any = None, login: LoginClient | None = None) -> FastMCP:
+def create_server(
+    target: HktvService | Accounts, *, auth: Any = None, login: LoginClient | None = None, browser_auth: Any = None
+) -> FastMCP:
     accounts = target if isinstance(target, Accounts) else Accounts(target.settings, None, target)
+    portal = {}
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        if portal:
+            async with portal["connections"].relay.lifespan():
+                yield
+        else:
+            yield
+
     mcp = FastMCP(
         "hktvmall",
         version=__version__,
@@ -624,10 +637,16 @@ def create_server(target: HktvService | Accounts, *, auth: Any = None, login: Lo
         auth=auth,
         mask_error_details=True,
         cache_ttl=LIST_CACHE_TTL,
+        lifespan=lifespan,
     )
     mcp.add_middleware(ToolCallLog())
     mcp.add_middleware(TypedArgumentErrors())
     settings = accounts.settings
+    if auth is not None and not isinstance(auth, HktvOAuth) and settings.public_url and settings.login_url:
+        from .connections import Connections
+
+        portal["connections"] = Connections(accounts, auth=browser_auth, client=login)
+    mcp.connections = portal.get("connections")
     if isinstance(auth, HktvOAuth) and settings.login_url and settings.login_token and settings.session_key:
         # The connect page: the sign-in screen /authorize sends friends to (invite code, then HKTVmall's own
         # login); outside the MCP bearer because people open it in a browser.
@@ -644,7 +663,14 @@ def create_server(target: HktvService | Accounts, *, auth: Any = None, login: Lo
         """Run ``fn`` (an HktvService method) for the caller's own account."""
         token = get_access_token()
         try:
-            service = accounts.resolve(token.client_id if token else None, open_default=auth is None)
+            person = None
+            if auth is not None and settings.trusted_account_header:
+                try:
+                    values = get_http_request().headers.getlist(settings.trusted_account_header)
+                    person = values[0] if len(values) == 1 else None
+                except RuntimeError:
+                    pass
+            service = accounts.resolve(token.client_id if token else None, open_default=auth is None, person=person)
         except HktvError as exc:
             log.info("tool error %s (%s)", exc.code, exc.log_detail or "-")
             raise ToolError(_json({"error": exc.payload()}), log_level=logging.WARNING) from None
@@ -844,16 +870,21 @@ def serve_http(settings: Settings, *, host: str, port: int) -> None:
     """Streamable HTTP behind MCP_BEARER_TOKEN; with connected accounts, also their OAuth sign-in."""
     static = require_bearer()
     accounts = build_accounts(settings)
-    auth = static
-    if settings.public_url and settings.session_key and settings.login_url:
-        # Connected people sign in on HKTVMALL_PUBLIC_URL; the static bearers keep meaning the default account.
-        auth = HktvOAuth(public_url=settings.public_url, state_dir=settings.state_dir, accounts=accounts, static=static)
+    server = create_server(accounts, auth=static)
+    middleware = []
+    if server.connections is not None:
+        from starlette.middleware import Middleware as AsgiMiddleware
+
+        from .connections import BrowserRoutes
+
+        middleware.append(AsgiMiddleware(BrowserRoutes, connections=server.connections))
     _start_keepalive(accounts)
-    create_server(accounts, auth=auth).run(
+    server.run(
         transport="streamable-http",
         host=host,
         port=port,
         uvicorn_config=UVICORN,
+        middleware=middleware,
         # No banner: it advertises a hosting service and asks PyPI for FastMCP updates; only HKTVmall is contacted.
         show_banner=False,
         **HTTP_OPTIONS,

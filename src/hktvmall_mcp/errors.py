@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 NEXT_STEP: dict[str, str] = {
+    "connection_disconnected": "Server access to this account is stopped. Open My connections to resume or reconnect.",
     "invalid_argument": "Fix the arguments and call again.",
     "not_signed_in": (
         "No HKTVmall account is signed in yet; search still works. Ask the person to run `hktvmall-mcp login` "
@@ -21,8 +22,8 @@ NEXT_STEP: dict[str, str] = {
         "generation."
     ),
     "not_connected": (
-        "This connection is not linked to an HKTVmall account. Ask the person to reconnect the HKTVmall "
-        "connector and log in to HKTVmall there."
+        "This identity has no configured HKTVmall account. Ask the administrator to check its account mapping, "
+        "then open My connections to sign in."
     ),
     "account_mismatch": (
         "HKTVmall shows a different account than the one this connection was made with. Ask the person to "

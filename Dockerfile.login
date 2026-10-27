@@ -65,6 +65,7 @@ RUN uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
 RUN python -c "from pathlib import Path; import patchright; p = Path(patchright.__file__).parent / 'driver' / 'node'; p.unlink(); p.symlink_to('/usr/local/bin/browser-node')" \
  && python -m patchright --version
 
+ARG VERSION=unknown
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_URL=https://github.com/benjamin-di/hktvmall-mcp-server
@@ -72,6 +73,7 @@ LABEL org.opencontainers.image.title="hktvmall-mcp-login" \
       org.opencontainers.image.description="The browser people sign in to HKTVmall with, for hktvmall-mcp's connect page" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
 

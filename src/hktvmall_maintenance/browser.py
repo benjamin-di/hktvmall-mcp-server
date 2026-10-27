@@ -366,12 +366,12 @@ class HktvmallTargetBrowser:
         finally:
             pointer.close()
 
-    def _challenge_hold(self, frame: Any) -> None:
+    def _challenge_hold(self, frame: Any, *, captured_visible: bool | None = None) -> None:
         body = frame.locator("body").inner_text(timeout=5_000).casefold()
         if any(marker in body for marker in _BLOCK_MARKERS):
             raise ProviderBlocked(BlockReason.CAPTCHA)
         challenge = frame.locator("#rc-imageselect")
-        if not self._visible(challenge):
+        if captured_visible is False or not self._visible(challenge):
             return
         # Capture only the challenge, never the account/credential/OTP form.
         with suppress(Exception):
@@ -483,18 +483,15 @@ class HktvmallTargetBrowser:
             # Google preloads this frame before the checkbox opens the grid.
             # A hidden frame must not spend the one bounded solve attempt.
             if frame is not None:
-                if (
-                    self._visible(frame.locator("#rc-imageselect"))
-                    and self._solver is not None
-                    and not self._image_challenge_attempted
-                ):
+                visible = self._visible(frame.locator("#rc-imageselect"))
+                if visible and self._solver is not None and not self._image_challenge_attempted:
                     self._image_challenge_attempted = True
                     if self._solver.solve():
                         # The challenge cleared; the code request follows on
                         # its own, so the wait restarts on a full window.
                         deadline = self._clock() + 45
                         continue
-                self._challenge_hold(frame)
+                self._challenge_hold(frame, captured_visible=visible)
             anchor = self._frame("/recaptcha/api2/anchor")
             if anchor is not None and not checked:
                 checkbox = anchor.locator("#recaptcha-anchor")

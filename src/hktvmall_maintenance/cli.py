@@ -21,6 +21,8 @@ from signin_window.automation.secrets import load_credential_reader
 from signin_window.leases import LeaseKind, ordered_file_lease
 from signin_window.sessions import AttemptBudget
 
+from hktvmall_mcp.connections_state import ConnectionState
+
 from .browser import open_hktvmall_browser
 from .config import load_identity_target
 from .keeper import IdentityKeeper, read_identity_status
@@ -54,6 +56,11 @@ def lease(root: Path):
 
 
 def build_keeper(root: Path, export_dir: Path, expected_email: str, reference: str, *, timezone_id: str | None = None):
+    from .human_state import recover
+
+    controls = os.environ.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR")
+    if controls and (not Path(controls).is_absolute() or not Path(controls).is_dir()):
+        raise ValueError("mount the shared connection-control directory before maintenance")
     if not expected_email or "@" not in expected_email or any(x in expected_email for x in ("\n", "\r")):
         raise ValueError("configure the expected account")
     spec = load_identity_target(TARGET, credential_reference=reference, timezone_id=timezone_id)
@@ -117,6 +124,10 @@ def build_keeper(root: Path, export_dir: Path, expected_email: str, reference: s
         utc_now=lambda: datetime.now(UTC),
         snapshot_writer=publish,
         snapshot_generation=published_generation,
+        connection_control=ConnectionState(Path(os.environ["HKTVMALL_CONNECTIONS_CONTROLS_DIR"]), "default")
+        if os.environ.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR")
+        else None,
+        recover=(lambda: recover(root, export_dir, ConnectionState(Path(controls), "default"))) if controls else None,
     )
 
 
@@ -144,10 +155,25 @@ def main(argv=None):
             report = read_identity_status(TARGET, state=state, budget=budget, now=datetime.now(UTC))
             payload = report.public_dict()
             code = 1 if report.stale or report.state.hold is not None else 0
+            controls_dir = os.environ.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR")
+            if controls_dir:
+                connection = ConnectionState(Path(controls_dir), "default").read()
+                payload["connection_state"] = connection["state"]
+                if connection["state"] != "active":
+                    payload.update(outcome="disconnected", needs_attention=False)
+                    code = 0  # intentional suspension is explicit, never a claim of provider health
         else:
             if not args.hold_id:
                 raise ValueError("an exact hold id is required")
             with lease(args.root):
+                if os.environ.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR") and args.export_dir:
+                    from .human_state import recover
+
+                    recover(
+                        args.root,
+                        Path(args.export_dir),
+                        ConnectionState(Path(os.environ["HKTVMALL_CONNECTIONS_CONTROLS_DIR"]), "default"),
+                    )
                 cleared = state.clear_hold(TARGET, args.hold_id)
             payload = {"target": TARGET, "hold_id": args.hold_id, "cleared": cleared}
             code = 0 if cleared else 1

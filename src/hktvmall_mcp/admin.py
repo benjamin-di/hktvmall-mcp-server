@@ -1,11 +1,10 @@
 """Commands for a server that hosts several people (``hktvmall-mcp admin ...``; in a container,
 ``docker exec hktvmall-mcp hktvmall-mcp admin ...``):
 
-  invite LABEL         a new invite code for one friend, and what to send them (shown once; only its hash is kept)
-  invites              invites: label, connected account, revoked
+  invites              historical invites: label, connected account, revoked (no new signups)
   revoke PREFIX        withdraw an invite (its first 8+ characters from ``invites``)
   accounts             connected accounts: id, masked email, sign-in state
-  disconnect ID        delete a connected account's session (they can connect again with their invite)
+  disconnect ID        durably stop server access; retain ownership, budgets and caches
 
 Never prints cookies or invite codes other than the one just created.
 """
@@ -24,13 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     command = args.pop(0) if args else "help"
     settings = Settings.from_env()
     invites = Invites(settings.state_dir)
-    if command == "invite" and args:
-        code = invites.create(" ".join(args))
-        base = settings.public_url or "<HKTVMALL_PUBLIC_URL>"
-        print(f"Invite code: {code}\nConnector:   {base}/mcp")
-        print("In Claude or ChatGPT, add a custom connector with that address and press Connect; enter the code")
-        print("when asked, then log in to HKTVmall as usual. The code works for the first account that uses it.")
-        return 0
+    if command == "invite":
+        print("Invite signup is retired. Configure identity-provider access and reviewed account/management bindings.")
+        return 2
     if command == "invites":
         print(json.dumps(invites.describe(), indent=2, ensure_ascii=False))
         return 0
@@ -46,7 +41,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(accounts.describe(), indent=2, ensure_ascii=False))
             return 0
         if len(args) == 1:
-            ok = accounts.remove(args[0])
+            account = args[0]
+            ok = account == "default" or account in accounts.ids() or account in accounts.bindings().values()
+            if ok:
+                epoch = accounts.control(account).suspend()
+                accounts.disconnect_owned(account, epoch)
             print("disconnected" if ok else "no such account")
             return 0 if ok else 1
     print(__doc__)

@@ -7,3 +7,5 @@ move money, privately through GitHub's
 in a public issue.
 
 Only the latest release is supported. Problems in HKTVmall's own site should be reported to HKTVmall.
+
+The [permissions model](docs/PERMISSIONS.md) describes the independent browser, gateway, backend and provider boundaries, including disconnect and recovery.

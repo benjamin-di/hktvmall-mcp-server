@@ -24,6 +24,8 @@ from signin_window.leases import LeaseBusyError
 from signin_window.sessions import SessionStillDead as _StillDead
 from signin_window.sessions import WarmFirst
 
+from hktvmall_mcp.errors import HktvError
+
 from .models import FrozenModel, PersistenceError, ProviderReadiness
 from .outcomes import (
     AccountMismatch,
@@ -94,7 +96,9 @@ class IdentityRunResult(FrozenModel):
         reads an ageing snapshot.
         """
 
-        return self.hold_id is not None or snapshot_is_stale(self.snapshot_age_s)
+        return self.outcome != IdentityOutcome.DISCONNECTED and (
+            self.hold_id is not None or snapshot_is_stale(self.snapshot_age_s)
+        )
 
     @property
     def exit_code(self) -> int:
@@ -195,6 +199,8 @@ class IdentityKeeper:
         utc_now: Callable[[], datetime],
         snapshot_writer: Callable[[Path, TargetBrowser, int, str, datetime], None] | None = None,
         snapshot_generation: Callable[[Path], int] = published_generation,
+        connection_control=None,
+        recover=None,
     ) -> None:
         self._target = target
         self._expected_email = expected_email
@@ -206,6 +212,8 @@ class IdentityKeeper:
         self._lease = lease
         self._utc_now = utc_now
         self._snapshot_writer = snapshot_writer
+        self._connection_control = connection_control
+        self._recover = recover
         self._snapshot_generation = snapshot_generation
 
     def status(self) -> IdentityStatusReport:
@@ -234,11 +242,19 @@ class IdentityKeeper:
     def run(self, *, allow_credential_mint: bool) -> IdentityRunResult:
         try:
             with self._lease():
-                return self._run_leased(allow_credential_mint=allow_credential_mint)
+                if self._recover is not None:
+                    self._recover()
+                epoch = self._connection_control.require_active() if self._connection_control is not None else None
+                result = self._run_leased(allow_credential_mint=allow_credential_mint, connection_epoch=epoch)
+                if self._connection_control is not None and result.outcome != IdentityOutcome.PUBLISHED:
+                    self._connection_control.note_attention(epoch, self._snapshot_generation(self._export_dir))
+                return result
         except LeaseBusyError:
             return self._result(IdentityOutcome.SKIPPED_LEASE_BUSY)
+        except HktvError:
+            return self._result(IdentityOutcome.DISCONNECTED, reason="owner_disconnected")
 
-    def _run_leased(self, *, allow_credential_mint: bool) -> IdentityRunResult:
+    def _run_leased(self, *, allow_credential_mint: bool, connection_epoch=None) -> IdentityRunResult:
         # Re-read under the lease: another run may have just held or blocked.
         early = self.preflight()
         if early is not None:
@@ -248,8 +264,8 @@ class IdentityKeeper:
             prepare_export_dir(self._export_dir)
             with self._open_browser() as browser:
                 flow = WarmFirst(
-                    lambda: self._refresh(browser),
-                    lambda: self._sign_in(browser, allow=allow_credential_mint),
+                    lambda: self._refresh(browser, connection_epoch=connection_epoch),
+                    lambda: self._sign_in(browser, allow=allow_credential_mint, connection_epoch=connection_epoch),
                     signed_out=SessionDead,
                 )
                 try:
@@ -307,6 +323,8 @@ class IdentityKeeper:
                 reason=failed.reason.value,
                 signed_in=signed_in,
             )
+        except HktvError:
+            return self._result(IdentityOutcome.DISCONNECTED, reason="owner_disconnected")
         except BrowserRuntimeError:
             return self._infrastructure(InfrastructureReason.BROWSER, signed_in)
         except (SnapshotError, PersistenceError):
@@ -316,10 +334,15 @@ class IdentityKeeper:
             # that crashed here already left its provisional hold behind.
             return self._infrastructure(InfrastructureReason.UNCLASSIFIED, signed_in)
 
-    def _refresh(self, browser: TargetBrowser) -> int:
+    def _refresh(self, browser: TargetBrowser, *, connection_epoch=None) -> int:
         """Warm, verify and capture headers in the browser, stage, publish."""
 
-        email = browser.warm()
+        try:
+            email = browser.warm()
+        except SessionDead:
+            if self._connection_control is not None:
+                self._connection_control.note_signed_out(connection_epoch, self._snapshot_generation(self._export_dir))
+            raise
         if not same_account(email, self._expected_email):
             raise AccountMismatch()
         generation = (
@@ -331,11 +354,17 @@ class IdentityKeeper:
         )
         if self._snapshot_writer is None:
             raise SnapshotError("a snapshot publisher is required")
-        self._snapshot_writer(self._export_dir, browser, generation, email, self._utc_now())
-        self._state.record_publish(self._target, generation)
+        from contextlib import nullcontext
+
+        guard = self._connection_control.active(connection_epoch) if self._connection_control else nullcontext()
+        with guard:
+            self._snapshot_writer(self._export_dir, browser, generation, email, self._utc_now())
+            self._state.record_publish(self._target, generation)
         return generation
 
-    def _sign_in(self, browser: TargetBrowser, *, allow: bool) -> None:
+    def _sign_in(self, browser: TargetBrowser, *, allow: bool, connection_epoch=None) -> None:
+        if self._connection_control is not None:
+            self._connection_control.require_active(connection_epoch)
         if not allow:
             raise _MintRefused(self._result(IdentityOutcome.MINT_NOT_PERMITTED, reason="session_dead"))
         readiness = self._readiness()

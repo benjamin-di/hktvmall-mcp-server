@@ -343,7 +343,7 @@ def test_wrong_password_redirect_holds_as_rejected_credential(driver, stub, mode
     assert mail.requests == []
 
 
-def test_preloaded_google_frame_waits_for_the_visible_grid(driver, stub):
+def test_preloaded_google_frame_waits_for_the_visible_grid(driver, stub, monkeypatch):
     browser, mail = driver
     page = browser._page
     browser._browser.context.route(
@@ -368,7 +368,20 @@ def test_preloaded_google_frame_waits_for_the_visible_grid(driver, stub):
         return True
 
     browser._solver = SimpleNamespace(solve=solve)
-    page.evaluate("setTimeout(() => document.querySelector('#challenge').style.display = 'block', 100)")
+    visible = browser._visible
+    reads = []
+
+    def reveal_after_first_read(locator):
+        observed = visible(locator)
+        if not reads:
+            assert not observed
+            # Make the frame visible immediately after the caller captured hidden.
+            # It must wait for its next observation before consuming an attempt.
+            page.evaluate("document.querySelector('#challenge').style.display = 'block'")
+        reads.append(observed)
+        return observed
+
+    monkeypatch.setattr(browser, "_visible", reveal_after_first_read)
     assert browser._await_code_request() == "otp_requested"
     assert calls == [True]
     assert stub.posts() == []

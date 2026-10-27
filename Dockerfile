@@ -30,6 +30,7 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
  && rm -rf /app/src \
  && install -d -o 1000 -g 1000 -m 0700 /state
 
+ARG VERSION=unknown
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_URL=https://github.com/benjamin-di/hktvmall-mcp-server
@@ -37,6 +38,7 @@ LABEL org.opencontainers.image.title="hktvmall-mcp" \
       org.opencontainers.image.description="MCP server for HKTVmall (Hong Kong) baskets" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
 

@@ -40,8 +40,13 @@ class Settings:
     total_daily_budget: int = 4000  # every account together: they share one IP address
     session_key: bytes | None = field(default=None, repr=False)  # connected accounts are off without it
     login_url: str | None = None  # the login service (hktvmall_login); the connect pages are off without it
+    default_login_url: str | None = None  # private kept backend in the default-account custodian
     login_token: str | None = field(default=None, repr=False)
     public_url: str | None = None  # where people open the connect pages (invite links)
+    trusted_account_header: str | None = None
+    accounts_file: Path | None = None
+    managers_file: Path | None = None
+    controls_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if (self.snapshot_path is None) != (self.expected_email is None):
@@ -57,6 +62,14 @@ class Settings:
             raise ConfigError("HKTVMALL_EXPECTED_EMAIL must be the snapshot account's email")
         if self.login_url and (not self.login_token or len(self.login_token) < 32 or not self.session_key):
             raise ConfigError("HKTVMALL_LOGIN_URL needs HKTVMALL_LOGIN_TOKEN (32+ characters) and HKTVMALL_SESSION_KEY")
+        if self.trusted_account_header and (
+            not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9-]{0,63}", self.trusted_account_header) or self.accounts_file is None
+        ):
+            raise ConfigError("Trusted account routing requires a header name and reviewed account bindings")
+        if self.controls_dir is not None and (
+            not self.controls_dir.is_absolute() or ".." in self.controls_dir.parts or not self.controls_dir.is_dir()
+        ):
+            raise ConfigError("The shared connection-control directory must be mounted before startup")
 
     @property
     def session_path(self) -> Path:
@@ -79,18 +92,29 @@ class Settings:
             total_daily_budget=_int(env, "HKTVMALL_TOTAL_DAILY_BUDGET", 4000, 0, 1_000_000),
             session_key=_key(env),
             login_url=_internal_url(env),
+            default_login_url=_internal_url(env, "HKTVMALL_DEFAULT_LOGIN_URL"),
             login_token=(env.get("HKTVMALL_LOGIN_TOKEN") or "").strip() or None,
             public_url=(env.get("HKTVMALL_PUBLIC_URL") or "").strip().rstrip("/") or None,
+            trusted_account_header=(env.get("HKTVMALL_TRUSTED_ACCOUNT_HEADER") or "").strip().lower() or None,
+            accounts_file=Path(env["HKTVMALL_CONNECTIONS_ACCOUNTS_FILE"])
+            if env.get("HKTVMALL_CONNECTIONS_ACCOUNTS_FILE")
+            else None,
+            managers_file=Path(env["HKTVMALL_CONNECTIONS_MANAGERS_FILE"])
+            if env.get("HKTVMALL_CONNECTIONS_MANAGERS_FILE")
+            else None,
+            controls_dir=Path(env["HKTVMALL_CONNECTIONS_CONTROLS_DIR"])
+            if env.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR")
+            else None,
         )
 
 
-def _internal_url(env: Mapping[str, str]) -> str | None:
+def _internal_url(env: Mapping[str, str], name="HKTVMALL_LOGIN_URL") -> str | None:
     """The login service runs beside this server: plain http on the private network, host and port only."""
-    raw = (env.get("HKTVMALL_LOGIN_URL") or "").strip().rstrip("/")
+    raw = (env.get(name) or "").strip().rstrip("/")
     if not raw:
         return None
     if not re.fullmatch(r"http://[a-z0-9][a-z0-9.-]{0,62}:[0-9]{2,5}", raw):
-        raise ConfigError("HKTVMALL_LOGIN_URL must look like http://hktvmall-mcp-login:8080")
+        raise ConfigError(f"{name} must name a private HTTP host and port")
     return raw
 
 

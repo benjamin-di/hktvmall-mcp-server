@@ -10,6 +10,8 @@ class IdentityOutcome(StrEnum):
 
     #: A new snapshot generation passed browser verification and was published.
     PUBLISHED = "published"
+    #: The account owner stopped server access; no upkeep or credential minting.
+    DISCONNECTED = "disconnected"
     #: Another run holds the profile lease; nothing was attempted.
     SKIPPED_LEASE_BUSY = "skipped_lease_busy"
     #: An earlier ``blocked`` cooldown is still running; nothing was attempted.

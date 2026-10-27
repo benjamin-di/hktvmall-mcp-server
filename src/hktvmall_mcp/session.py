@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,12 +100,19 @@ class SessionStore:
         self._held: _Held | None = None
         self._source_state = "missing"
         self._source_generation: int | None = None
+        self.access_check = lambda: None
+        self.read_guard = nullcontext
+        self.write_guard = nullcontext
 
     def _read(self) -> Snapshot:
         return read_snapshot(self.snapshot_path, self.expected_email, self._clock())
 
     def _refresh(self) -> str | None:
         """Adopt a newer published generation; return the source's error code, if any."""
+        with self.read_guard():
+            return self._refresh_admitted()
+
+    def _refresh_admitted(self) -> str | None:
         try:
             st = os.stat(self.snapshot_path)
             key = (st.st_ino, st.st_mtime_ns, st.st_size)
@@ -141,6 +149,7 @@ class SessionStore:
 
     def checkout_client(self) -> tuple[int, http.cookiejar.CookieJar, str]:
         """The generation, its cookie jar and the signed-in browser's User-Agent, read together."""
+        self.access_check()
         with self._lock:
             held = self._usable()
             return held.generation, to_jar(held.cookies), held.user_agent
@@ -254,7 +263,7 @@ class OwnedSession(SessionStore):
     def write(self, email: str, user_agent: str, cookies: list[dict[str, Any]]) -> int:
         """Store a session from a login the person did themselves, one generation above the current file."""
         email = email.strip().casefold()
-        with locked(self.lock_path):
+        with self.write_guard(), locked(self.lock_path):
             generation = self._current_generation() + 1
             payload = session_payload(generation, email, user_agent, cookies, self._clock())
             raw = json.dumps(payload).encode()
@@ -274,12 +283,12 @@ class OwnedSession(SessionStore):
             if not changed or held.state == "dead":
                 return
             try:
-                with locked(self.lock_path):
+                with self.write_guard(), locked(self.lock_path):
                     if self._read().generation != generation:
                         return  # a newer login won; the next call adopts it
                     payload = session_payload(generation, self.expected_email, held.user_agent, cookies, self._clock())
                     atomic_write_bytes(self.snapshot_path, self._encode(json.dumps(payload).encode()))
-            except (SnapshotError, OSError) as exc:  # the in-memory cookies still apply to this process
+            except (SnapshotError, OSError, HktvError) as exc:  # a disconnected session may finish an admitted call
                 log.error("could not persist the session (%s)", type(exc).__name__)
 
 

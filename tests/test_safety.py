@@ -107,15 +107,16 @@ def test_the_login_client_reaches_only_the_configured_internal_service():
     base is HKTVMALL_LOGIN_URL, plain http, host:port, checked at startup."""
     from hktvmall_mcp.config import ConfigError, Settings
 
-    assert not (SRC / "login_client.py").exists()
+    assert "from signin_window.client import LoginClient" in (SRC / "connections.py").read_text(encoding="utf-8")
     assert "from signin_window.client import LoginClient" in (SRC / "server.py").read_text(encoding="utf-8")
     base = {"HKTVMALL_SESSION_SNAPSHOT": "/s/x.json", "HKTVMALL_EXPECTED_EMAIL": "a@b.c"}
-    for bad in ("https://evil.example", "http://hktvmall-mcp-login:8080/x", "http://user@host:80", "file:///x"):
-        try:
-            Settings.from_env({**base, "HKTVMALL_LOGIN_URL": bad})
-        except ConfigError:
-            continue
-        raise AssertionError(f"{bad} accepted")
+    for name in ("HKTVMALL_LOGIN_URL", "HKTVMALL_DEFAULT_LOGIN_URL"):
+        for bad in ("https://evil.example", "http://hktvmall-mcp-login:8080/x", "http://user@host:80", "file:///x"):
+            try:
+                Settings.from_env({**base, name: bad})
+            except ConfigError:
+                continue
+            raise AssertionError(f"{bad} accepted")
 
 
 def _calls(path: Path, name: str) -> list[ast.Call]:

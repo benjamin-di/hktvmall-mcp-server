@@ -30,6 +30,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .auth import BEARER_CLIENT
+from .connections_state import ConnectionState
 from .errors import HktvError
 from .fsio import read_private
 from .session import OwnedSession
@@ -87,9 +88,15 @@ class AccountSession(OwnedSession):
 
     seal_overhead = 64
 
-    def __init__(self, directory: Path, account_id: str, email: str, key: bytes, clock=time.time) -> None:
+    def __init__(
+        self, directory: Path, account_id: str, email: str, key: bytes, clock=time.time, *, generation_floor=0
+    ) -> None:
         super().__init__(directory / "session.bin", email, lock_path=directory / ".lock", clock=clock)
         self.directory, self.account_id, self._key = directory, account_id, key
+        self.generation_floor = generation_floor
+
+    def _current_generation(self):
+        return max(super()._current_generation(), self.generation_floor)
 
     def _decode(self, blob: bytes) -> bytes:
         return unseal(self._key, self.account_id, blob)
@@ -123,6 +130,68 @@ class Accounts:
         self.directory = settings.state_dir / "accounts"
         self._services: dict[str, HktvService] = {DEFAULT: default}
         self._lock = threading.Lock()
+        default_control = self.control(DEFAULT)
+        default.session.access_check = default_control.require_active
+        default.session.read_guard = default_control.admission
+        default.session.write_guard = default_control.active
+
+    def control(self, account_id):
+        if account_id != DEFAULT and not ACCOUNT_ID.fullmatch(account_id):
+            raise HktvError("not_connected")
+        return ConnectionState(
+            self.settings.controls_dir or self.settings.state_dir / "connection-controls", account_id
+        )
+
+    def bindings(self):
+        if self.settings.accounts_file is None:
+            return {}
+        try:
+            data = json.loads(read_private(self.settings.accounts_file, 65536))
+        except (OSError, ValueError):
+            raise HktvError("not_connected") from None
+        if (
+            not isinstance(data, dict)
+            or not data
+            or len(data) > 100
+            or any(
+                not isinstance(person, str)
+                or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", person)
+                or not isinstance(account, str)
+                or (account != DEFAULT and not ACCOUNT_ID.fullmatch(account))
+                for person, account in data.items()
+            )
+        ):
+            raise HktvError("not_connected")
+        return data
+
+    def managers(self):
+        access = self.bindings()
+        if self.settings.managers_file is None:
+            if len(set(access.values())) != len(access):
+                raise HktvError("not_connected", log_detail="shared accounts require explicit management owners")
+            return {account: person for person, account in access.items()}
+        try:
+            data = json.loads(read_private(self.settings.managers_file, 65536))
+        except (OSError, ValueError):
+            raise HktvError("not_connected") from None
+        if (
+            not isinstance(data, dict)
+            or set(data) != set(access.values())
+            or any(not isinstance(person, str) or access.get(person) != account for account, person in data.items())
+        ):
+            raise HktvError("not_connected")
+        return data
+
+    def account_for(self, person):
+        account = self.bindings().get(person) if isinstance(person, str) else None
+        if account is None:
+            raise HktvError("not_connected")
+        return account
+
+    def forget(self, account):
+        if account != DEFAULT:
+            with self._lock:
+                self._services.pop(account, None)
 
     @property
     def default(self) -> HktvService:
@@ -130,19 +199,20 @@ class Accounts:
 
     # -- who is calling ---------------------------------------------------------------------
 
-    def resolve(self, client_id: str | None, *, open_default: bool = False) -> HktvService:
+    def resolve(self, client_id: str | None, *, open_default: bool = False, person: str | None = None) -> HktvService:
         """The account a caller acts for. ``open_default`` for a server without auth (stdio, tests)."""
         if client_id is None:
             if open_default:
-                return self.default
+                return self.get(DEFAULT)
             raise HktvError("not_connected", log_detail="no token")
         if client_id == BEARER_CLIENT:
-            return self.default
+            return self.get(self.account_for(person) if self.settings.trusted_account_header else DEFAULT)
         if client_id.startswith(ACCOUNT_CLIENT):
             return self.get(client_id[len(ACCOUNT_CLIENT) :])
         raise HktvError("not_connected", log_detail="unknown client")
 
     def get(self, account_id: str) -> HktvService:
+        self.control(account_id).require_active()
         with self._lock:
             service = self._services.get(account_id)
             if service is not None:
@@ -165,7 +235,7 @@ class Accounts:
         with self._lock:
             for gone in [i for i in self._services if i != DEFAULT and i not in ids]:
                 del self._services[gone]
-        out = [self.default]
+        out = [self.default] if self.control(DEFAULT).read()["state"] == "active" else []
         for account_id in ids:
             try:
                 out.append(self.get(account_id))
@@ -209,6 +279,11 @@ class Accounts:
         directory = self.directory / account_id
         state = StateStore(directory, budget=self.settings.account_daily_budget, clock=self._clock)
         session = AccountSession(directory, account_id, email, self.settings.session_key, clock=self._clock)
+        control = self.control(account_id)
+        epoch = control.require_active()
+        session.access_check = lambda: control.require_active(epoch)
+        session.read_guard = lambda: control.admission(epoch)
+        session.write_guard = lambda: control.active(epoch)
         site = Site(AccountTransport(self.transport, state), session)  # type: ignore[arg-type]
         return HktvService(site, state, session, self.settings, shared=self.transport.state, account_id=account_id)
 
@@ -242,6 +317,49 @@ class Accounts:
         shutil.rmtree(directory)
         log.info("account %s removed", account_id)
         return True
+
+    def adopt_owned(self, account_id, epoch, email, cookies, user_agent):
+        if account_id == DEFAULT:
+            raise HktvError("not_connected")
+        email = email.strip().casefold()
+        control = self.control(account_id)
+        with control.active(epoch) as data:
+            expected = data["provider_email"] or self._email(account_id)
+            if expected and expected != email:
+                raise HktvError("account_mismatch")
+            if any(other != account_id and self._email(other) == email for other in self.ids()):
+                raise HktvError("account_mismatch")
+            directory = self.directory / account_id
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            session = AccountSession(
+                directory,
+                account_id,
+                email,
+                self.settings.session_key,
+                clock=self._clock,
+                generation_floor=data["generation"],
+            )
+            generation = session.write(email, user_agent, cookies)
+            data.update(provider_email=email, generation=generation)
+        self.forget(account_id)
+        return account_id
+
+    def disconnect_owned(self, account_id, epoch):
+        control = self.control(account_id)
+        with control.edit() as data:
+            if data["state"] != "disconnecting" or data["epoch"] != epoch:
+                raise HktvError("connection_disconnected")
+            self.forget(account_id)
+            if account_id != DEFAULT:
+                data["provider_email"] = data["provider_email"] or self._email(account_id)
+                blob = self.directory / account_id / "session.bin"
+                if blob.exists() and self.settings.session_key:
+                    snapshot = json.loads(
+                        unseal(self.settings.session_key, account_id, read_private(blob, MAX_SNAPSHOT + 64))
+                    )
+                    data["generation"] = max(data["generation"], int(snapshot.get("generation", 0)))
+                blob.unlink(missing_ok=True)
+            data["state"] = "disconnected"
 
     def describe(self) -> list[dict[str, Any]]:
         """For the operator: ids, masked emails and sign-in state; never cookies."""
