@@ -235,7 +235,7 @@ async def main():
                     assert (await second.request.get(link)).status == 404
                     assert (await second.request.get(link + "/novnc/vnc.html")).status == 404
                     existing_windows = set(windows._windows)
-                    await page.get_by_role("button", name="Continue to HKTVmall's sign-in", exact=True).click()
+                    # Owner-bound: the window opens on its own, without an intro to click through.
                     await wait_for(
                         lambda: (
                             remote.get("page") is not None

@@ -77,6 +77,9 @@ class Connections:
                 service="HKTVmall",
                 title="Connect your HKTVmall account",
                 reconnect=True,
+                # Every link is bound to the signed-in account that just pressed Connect (authorize refuses any
+                # other), so the window opens at once without the intro.
+                auto_start=True,
                 return_url=self.path,
                 intro_html="Sign in to the HKTVmall account already bound to this connection.",
             ).with_outcomes(
@@ -226,19 +229,14 @@ class Connections:
             raise HktvError("connection_disconnected") from None
 
     async def index(self, request):
+        if self.auth.identity(request) is None:
+            return RedirectResponse(self.path + "login", status_code=303)
         account = self.account(request)
         headers = {"Cache-Control": "no-store"}
         if account is None:
             body = (
-                (
-                    "<p>This account cannot manage an HKTVmall connection. "
-                    "Ask the person who set it up to check access.</p>" + self.form("logout", "Sign out")
-                )
-                if self.auth.identity(request)
-                else (
-                    "<p>Sign in to manage your own connection.</p>"
-                    f'<a href="{self.path}login">Continue with your identity provider</a>'
-                )
+                "<p>This account cannot manage an HKTVmall connection. "
+                "Ask the person who set it up to check access.</p>" + self.form("logout", "Sign out")
             )
         else:
             state = self.status(account)

@@ -184,7 +184,7 @@ async def main() -> int:
         await page.wait_for_url(base + "/connections/")
         await page.get_by_role("button", name="Connect", exact=True).click()
         await page.wait_for_url(base + "/connect/*")
-        await page.get_by_role("button", name="Continue to HKTVmall's sign-in", exact=True).click()
+        # Owner-bound: the window opens on its own, without an intro to click through.
         frame_element = await page.wait_for_selector("iframe", timeout=60_000)
         frame = await frame_element.content_frame()
         assert frame is not None
@@ -244,7 +244,7 @@ async def main() -> int:
         await page.goto(base + "/connections/")
         await page.get_by_role("button", name="Connect", exact=True).click()
         await page.wait_for_url(base + "/connect/*")
-        await page.get_by_role("button", name="Continue to HKTVmall's sign-in", exact=True).click()
+        # Owner-bound: the window opens on its own, without an intro to click through.
         await page.wait_for_selector("iframe")
         for _ in range(100):
             if remote.get("finish") is not None and remote.get("page") is not None:
@@ -266,9 +266,8 @@ async def main() -> int:
         assert not saved.exists()
         restarted = build_accounts(settings)
         assert restarted.control("acct_aaaaaaaaaaaa").read()["state"] == "disconnected"
-        assert (
-            await context.request.post(base + "/connections/logout", headers={"Origin": base}, max_redirects=0)
-        ).status == 303
+        signed_out = await context.request.post(base + "/connections/logout", headers={"Origin": base}, max_redirects=0)
+        assert signed_out.status == 200 and "/connections/login" in await signed_out.text()
         assert (await context.request.get(base + "/connections/status")).status == 401
         print("completed session survived page closure; disconnect survived restart and logout ended browser access")
         await viewer.close()

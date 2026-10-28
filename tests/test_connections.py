@@ -7,6 +7,7 @@ import secrets
 import time
 from contextlib import nullcontext
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import pytest
 from signin_window.oidc import BrowserAuth, OIDCConfig
@@ -524,3 +525,15 @@ def test_owner_forms_require_captured_epoch_and_state(configured):
                 == 409
             )
     assert accounts.control(account).read() == before
+
+
+def test_signed_out_home_goes_straight_to_sign_in_and_owner_links_open_the_window(configured):
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        home = browser.get("/connections/", follow_redirects=False)
+        assert home.status_code == 303 and home.headers["location"].endswith("/connections/login")
+        unmapped = browser.get("/connections/", headers=cookie(auth, "nobody"), follow_redirects=False)
+        assert unmapped.status_code == 200 and "cannot manage an HKTVmall connection" in unmapped.text
+        made = browser.post("/connections/start", headers=cookie(auth), follow_redirects=False)
+        attempt = browser.get(urlsplit(made.headers["location"]).path, headers=cookie(auth))
+        assert attempt.status_code == 200 and '"autoStart": true' in attempt.text

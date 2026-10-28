@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform != "linux":
+    pytest.skip("default custodian uses Linux profile ownership", allow_module_level=True)
+
 from hktvmall_maintenance.cli import lease, stores
 from hktvmall_maintenance.human import HumanRecovery, VerifiedSession
 from hktvmall_maintenance.human_state import commit, pending_path, profile_path, recover
@@ -19,7 +22,6 @@ from hktvmall_maintenance.snapshot import publish
 from hktvmall_mcp.connections_state import ConnectionState
 from hktvmall_mcp.errors import HktvError
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="default custodian uses Linux profile ownership")
 EMAIL = "owner@example.com"
 
 
