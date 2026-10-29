@@ -235,8 +235,9 @@ class Connections:
         headers = {"Cache-Control": "no-store"}
         if account is None:
             body = (
-                "<p>This account cannot manage an HKTVmall connection. "
-                "Ask the person who set it up to check access.</p>" + self.form("logout", "Sign out")
+                "<p>HKTVmall uses one shared household account, which its owner manages. "
+                "You can still use HKTVmall through your assistant without connecting anything here, "
+                "so there is nothing you need to do.</p>" + self.form("logout", "Sign out")
             )
         else:
             state = self.status(account)

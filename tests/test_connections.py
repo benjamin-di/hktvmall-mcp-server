@@ -533,7 +533,9 @@ def test_signed_out_home_goes_straight_to_sign_in_and_owner_links_open_the_windo
         home = browser.get("/connections/", follow_redirects=False)
         assert home.status_code == 303 and home.headers["location"].endswith("/connections/login")
         unmapped = browser.get("/connections/", headers=cookie(auth, "nobody"), follow_redirects=False)
-        assert unmapped.status_code == 200 and "cannot manage an HKTVmall connection" in unmapped.text
+        assert unmapped.status_code == 200 and "one shared household account" in unmapped.text
+        assert "nothing you need to do" in unmapped.text and "cannot manage" not in unmapped.text
+        assert 'action="/connections/logout"' in unmapped.text and "Sign out" in unmapped.text
         made = browser.post("/connections/start", headers=cookie(auth), follow_redirects=False)
         attempt = browser.get(urlsplit(made.headers["location"]).path, headers=cookie(auth))
         assert attempt.status_code == 200 and '"autoStart": true' in attempt.text
