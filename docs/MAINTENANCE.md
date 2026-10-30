@@ -128,7 +128,8 @@ It uses the existing `HKTVMALL_MAINTENANCE_ROOT`, `HKTVMALL_MAINTENANCE_EXPORT_D
 It listens privately on port 8081 (`HKTVMALL_DEFAULT_LOGIN_PORT`) and exposes the standard signin-window backend,
 with no direct viewer. It needs the login image's Chromium, Xvfb, x11vnc, noVNC and installed browser policy; it
 receives no credential reader, mailbox or planner configuration. A supervisor must drain both it and upkeep if either
-child stops. The reader selects it through `HKTVMALL_DEFAULT_LOGIN_URL` and retains its read-only snapshot mount.
+child stops. Since 0.14 no reader page opens it (My connections serves people mode, which has no snapshot account);
+it remains for `--recover-only` and for operators who drive the backend directly.
 
 The manager chooses the account in HKTVmall's own window; only the configured expected account can commit. The
 existing durable profile lease spans the window. A cold candidate preserves accepted state during failed, wrong-account
@@ -139,8 +140,8 @@ runs while recovery is outstanding. `python -m hktvmall_maintenance.human --reco
 under the profile lease. Preserve the journal, backups, controls and accounting on rollback.
 
 Positive native `SessionDead` observations are projected as a private closed hint in the shared controls directory,
-bound to the accepted snapshot generation and captured control epoch. The connections page can therefore report
-sign-in needed after a reader restart without deleting the accepted snapshot or making provider HTTP requests.
+bound to the accepted snapshot generation and captured control epoch. `hktv_status` (`connection_health`) can
+therefore report sign-in needed after a reader restart without deleting the accepted snapshot or making provider HTTP requests.
 A cancelled recovery retains that fact; a newer verified publication supersedes it. Outcome labels such as a hold,
 missing host requirements or exhausted budget alone never manufacture signed-out evidence. An older native run
 cannot overwrite a newer owner action's health hint.

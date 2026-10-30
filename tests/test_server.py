@@ -18,6 +18,7 @@ TOOLS = {
     "hktv_delivery_slots",
     "hktv_reviews",
     "hktv_status",
+    "hktv_connect",
 }
 
 
@@ -41,8 +42,17 @@ def test_tool_contracts(service):
     assert tools["hktv_update_cart"].annotations.idempotent_hint is True
     for name in ("hktv_search", "hktv_get_cart", "hktv_update_cart"):
         assert (tools[name].meta or {}).get("anthropic/alwaysLoad") is True
-    for name in TOOLS - {"hktv_status"}:
+    for name in TOOLS - {"hktv_status", "hktv_connect"}:
         assert tools[name].output_schema and tools[name].output_schema.get("additionalProperties") is not False
+
+
+def test_local_connect_tells_the_person_the_login_command(service):
+    async def go():
+        async with Client(server.create_server(service)) as c:
+            return (await c.call_tool("hktv_connect", {})).structured_content
+
+    link = run(go())
+    assert link["url"] is None and link["expires_at"] is None and "hktvmall-mcp login" in link["how"]
 
 
 def test_search_batches_widens_and_prices(service, site):

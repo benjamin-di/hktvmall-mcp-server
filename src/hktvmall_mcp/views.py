@@ -69,7 +69,7 @@ def reviews(raw: dict[str, Any], limit: int) -> dict[str, Any]:
 def _cents(value: Any) -> int | None:
     try:
         return round(float(value) * 100)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

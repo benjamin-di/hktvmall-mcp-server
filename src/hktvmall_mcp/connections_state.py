@@ -14,6 +14,11 @@ from pathlib import Path
 from .errors import HktvError
 from .fsio import atomic_write_bytes, atomic_write_json, locked, read_private
 
+BASE_FIELDS = {"version", "epoch", "state", "owner", "provider_email", "generation"}
+OPTIONAL_FIELDS = {"shared_with", "name"}  # a person's record only: who they share with, their display name
+MAX_SHARES = 20
+_PERSON = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
+
 
 class ConnectionState:
     def __init__(self, folder: Path, account: str, *, require_existing=None):
@@ -50,7 +55,7 @@ class ConnectionState:
             raise HktvError("connection_disconnected") from None
         if (
             not isinstance(data, dict)
-            or set(data) != {"version", "epoch", "state", "owner", "provider_email", "generation"}
+            or not BASE_FIELDS <= set(data) <= BASE_FIELDS | OPTIONAL_FIELDS
             or type(data["version"]) is not int
             or data["version"] != 1
             or not isinstance(data["epoch"], str)
@@ -59,6 +64,20 @@ class ConnectionState:
             or type(data["generation"]) is not int
             or data["generation"] < 0
             or (data["provider_email"] is not None and not isinstance(data["provider_email"], str))
+            or (
+                "shared_with" in data
+                and (
+                    not isinstance(data["shared_with"], list)
+                    or len(data["shared_with"]) > MAX_SHARES
+                    or len(set(map(str, data["shared_with"]))) != len(data["shared_with"])
+                    or not all(isinstance(p, str) and _PERSON.fullmatch(p) for p in data["shared_with"])
+                )
+            )
+            or (
+                "name" in data
+                and data["name"] is not None
+                and (not isinstance(data["name"], str) or len(data["name"]) > 40)
+            )
         ):
             raise HktvError("connection_disconnected")
         owner = data["owner"]
@@ -270,13 +289,11 @@ class ConnectionState:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Initialize an existing account's connection controls once")
+    parser = argparse.ArgumentParser(
+        description="Initialize the default account's connection controls once (people get theirs on first contact)"
+    )
     parser.add_argument("--initialize", action="store_true", required=True)
-    parser.add_argument("--account", default="default")
+    parser.add_argument("--account", default="default", choices=["default"])
     args = parser.parse_args()
-    from .accounts import ACCOUNT_ID
-
-    if args.account != "default" and not ACCOUNT_ID.fullmatch(args.account):
-        parser.error("invalid account")
     folder = Path(os.environ["HKTVMALL_CONNECTIONS_CONTROLS_DIR"])
     ConnectionState(folder, args.account, require_existing=False).initialize()

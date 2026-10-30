@@ -1,22 +1,20 @@
-"""Owner-authenticated UI, trusted account routing and durable publication barriers."""
+"""My connections: each person's own connection, owner-granted sharing, and durable publication barriers."""
 
 import dataclasses
 import json
 import os
 import secrets
 import time
-from contextlib import nullcontext
-from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import pytest
 from signin_window.oidc import BrowserAuth, OIDCConfig
 from starlette.testclient import TestClient
 from test_accounts import accounts as accounts  # noqa: F401
-from test_accounts import cookies
-from test_accounts import keyed as keyed
+from test_accounts import connect, cookies
+from test_accounts import keyed as keyed  # noqa: F401
 
-from hktvmall_mcp.accounts import BEARER_CLIENT, DEFAULT
+from hktvmall_mcp.accounts import BEARER_CLIENT
 from hktvmall_mcp.connections import Connections
 from hktvmall_mcp.errors import HktvError
 from hktvmall_mcp.session import to_jar
@@ -46,34 +44,51 @@ class Login:
         return 200, b"<p>Synthetic viewer</p>", "text/html"
 
 
+def forms(page):
+    """Each form on a page: (action, fields)."""
+    out = []
+    for chunk in page.split('<form method="post" action="')[1:]:
+        action, rest = chunk.split('"', 1)
+        fields = {}
+        for part in rest.split("</form>", 1)[0].split('<input type="hidden" name="')[1:]:
+            name, value = part.split('" value="', 1)
+            fields[name] = value.split('"', 1)[0]
+        out.append((action, fields))
+    return out
+
+
 class Browser(TestClient):
     def __init__(self, portal):
         self.connection_portal = portal
         super().__init__(portal.app, base_url=PUBLIC, follow_redirects=False)
 
     def post(self, url, **kwargs):
+        """Fill the form as the page would, from the signed-in person's own record."""
         if url in ("/connections/start", "/connections/disconnect") and "data" not in kwargs:
-            headers = kwargs.get("headers", {})
-            value = headers.get("Cookie", "").split("=", 1)[-1]
-            identity = self.connection_portal.auth.store.load(value)
-            alias = identity.get("claims", {}).get("person_id")
-            account = self.connection_portal.accounts.bindings().get(alias)
-            if account is not None:
-                current = self.connection_portal.accounts.control(account).read()
+            value = kwargs.get("headers", {}).get("Cookie", "").split("=", 1)[-1]
+            person = self.connection_portal.auth.store.load(value).get("claims", {}).get("person_id")
+            try:
+                current = self.connection_portal.accounts.control(person).read()
                 kwargs["data"] = {"epoch": current["epoch"], "state": current["state"]}
+            except HktvError:
+                pass
         return super().post(url, **kwargs)
+
+    def submit(self, page_headers, action, person=None):
+        """Press the page's button for ``action`` (and ``person``), as a browser would."""
+        page = self.get("/connections/", headers=page_headers).text
+        for path, fields in forms(page):
+            if path.endswith("/" + action) and (person is None or fields.get("person") == person):
+                return self.post(path, headers=page_headers, data=fields)
+        raise AssertionError(f"no {action} form for {person} on the page")
 
 
 @pytest.fixture
-def configured(accounts, tmp_path):
-    account = accounts.adopt(EMAIL, cookies("synthetic-session"), "Synthetic Browser")
-    bindings = tmp_path / "accounts.json"
-    bindings.write_text(json.dumps({"first": DEFAULT, "second": account}))
+def configured(accounts, tmp_path):  # noqa: F811
+    connect(accounts, "second", EMAIL, "synthetic-session")
     accounts.settings = dataclasses.replace(
         accounts.settings,
-        accounts_file=bindings,
         public_url=PUBLIC,
-        trusted_account_header="x-fleet-person",
         login_url="http://login.example.test:8080",
         login_token="x" * 40,
     )
@@ -88,10 +103,10 @@ def configured(accounts, tmp_path):
         )
     )
     portal = Connections(accounts, auth=auth, client=Login())
-    return accounts, account, auth, portal
+    return accounts, "second", auth, portal
 
 
-def cookie(auth, person="second", subject=None, *, fresh=True):
+def cookie(auth, person="second", subject=None, *, fresh=True, name="Example person"):
     sid = secrets.token_urlsafe(32)
     now = time.time()
     auth.store.save(
@@ -99,7 +114,7 @@ def cookie(auth, person="second", subject=None, *, fresh=True):
         {
             "issuer": auth.config.issuer,
             "sub": subject or "subject-" + person,
-            "name": "Example person",
+            "name": name,
             "groups": ["example-users"],
             "claims": {"person_id": person},
             "expires": now + 900,
@@ -132,6 +147,154 @@ def test_ui_reads_do_not_claim_a_connection_and_start_requires_fresh_owner_auth(
         assert browser.get("/connections/status", headers=cookie(auth, subject="other-subject")).status_code == 401
 
 
+def test_first_visit_records_the_person_with_their_display_name_and_nothing_shared(configured):
+    accounts, _, auth, portal = configured
+    with client(portal) as browser:
+        page = browser.get("/connections/", headers=cookie(auth, "newcomer", name="New <Comer>"))
+    assert page.status_code == 200 and "No HKTVmall account connected yet" in page.text
+    assert "Connect HKTVmall" in page.text and "ask them to share it" in page.text
+    assert "newcomer" in accounts.known()
+    record = accounts.control("newcomer").read()
+    assert record["name"] == "New Comer" and record["owner"] is None and record.get("shared_with", []) == []
+    assert accounts.control("second").read().get("shared_with", []) == []
+
+
+def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(configured):
+    accounts, _, auth, portal = configured
+    owner = cookie(auth, name="Alex Owner")
+    member = cookie(auth, "third", name="Sam Member")
+    with client(portal) as browser:
+        assert "Nobody else has used HKTVmall here yet" in browser.get("/connections/", headers=owner).text
+        browser.get("/connections/", headers=member)  # Sam opens the page once: now Sam is on the roster
+        page = browser.get("/connections/", headers=owner).text
+        assert "Shared with" in page and "Sam Member" in page and "cannot see your password" in page
+        assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
+        stale = cookie(auth, fresh=False, name="Alex Owner")
+        assert browser.submit(stale, "share", "third").headers["location"].endswith("reauth=1")
+        assert accounts.control("second").read().get("shared_with", []) == []
+        assert browser.submit(owner, "share", "third").status_code == 303
+        assert accounts.control("second").read()["shared_with"] == ["third"]
+        assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "second"
+        member_page = browser.get("/connections/", headers=member).text
+        assert "Using Alex Owner's HKTVmall account." in member_page and "Stop using" in member_page
+        for action in ("start", "disconnect", "share", "unshare"):
+            assert f'action="/connections/{action}"' not in member_page
+        assert '✓ Sam Member <span class="muted">(third)</span>' in browser.get("/connections/", headers=owner).text
+        assert browser.submit(member, "leave", "second").status_code == 303
+        assert accounts.control("second").read()["shared_with"] == []
+        assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
+        browser.submit(owner, "share", "third")
+        assert browser.submit(cookie(auth, fresh=False, name="Alex Owner"), "unshare", "third").status_code == 303
+        assert accounts.control("second").read()["shared_with"] == []
+
+
+def test_members_cannot_manage_and_strangers_cannot_reach_a_connection(configured):
+    accounts, _, auth, portal = configured
+    member = cookie(auth, "third")
+    with client(portal) as browser:
+        browser.get("/connections/", headers=member)
+        browser.submit(cookie(auth), "share", "third")
+        record = accounts.control("second").read()
+        fields = {"epoch": record["epoch"], "state": record["state"]}
+        # A member's start, disconnect and share act on their own record only, never the owner's connection.
+        assert browser.post("/connections/start", headers=member).status_code == 409
+        assert browser.post("/connections/disconnect", headers=member, data=fields).status_code == 409
+        refused = browser.post("/connections/share", headers=member, data={**fields, "person": "second"})
+        assert refused.status_code == 409
+        refused = browser.post("/connections/unshare", headers=member, data={**fields, "person": "third"})
+        assert refused.status_code == 409
+        assert accounts.control("second").read() == record
+        # Another person cannot remove a member, and nobody can stop using a connection not shared with them.
+        browser.get("/connections/", headers=cookie(auth, "fourth"))
+        leave = browser.post("/connections/leave", headers=cookie(auth, "fourth"), data={**fields, "person": "second"})
+        assert leave.status_code == 409 and accounts.control("second").read()["shared_with"] == ["third"]
+        # No origin, no action.
+        no_origin = {"Cookie": cookie(auth)["Cookie"]}
+        assert (
+            browser.post("/connections/unshare", headers=no_origin, data={**fields, "person": "third"}).status_code
+            == 403
+        )
+        page = browser.get("/connections/", headers=cookie(auth)).text
+        assert "has their own HKTVmall connection" not in page and "✓ Example person" in page
+
+
+def test_a_member_never_sees_the_owners_sign_in_link(configured, monkeypatch):
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
+        browser.submit(cookie(auth), "share", "third")
+        monkeypatch.setattr(portal, "status", lambda person: {"state": "connecting", "url": PUBLIC + "/connect/x"})
+        member = browser.get("/connections/status", headers=cookie(auth, "third")).json()
+        page = browser.get("/connections/", headers=cookie(auth, "third")).text
+    assert member == {"role": "member", "owner": account, "state": "connecting"}
+    assert "/connect/x" not in page and "is reconnecting HKTVmall" in page
+
+
+def test_sharing_stays_available_while_the_owner_reconnects(configured):
+    accounts, _, auth, portal = configured
+    with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
+        browser.submit(cookie(auth), "share", "third")
+        browser.post("/connections/start", headers=cookie(auth))
+        page = browser.get("/connections/", headers=cookie(auth)).text
+        assert "Continue sign-in" in page and "Shared with" in page
+        assert browser.submit(cookie(auth), "unshare", "third").status_code == 303
+    assert accounts.control("second").read()["shared_with"] == []
+
+
+def test_first_sign_in_explains_sharing_without_offering_an_empty_account(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        headers = cookie(auth, "third")
+        for connecting in (False, True):
+            if connecting:
+                browser.post("/connections/start", headers=headers)
+            page = browser.get("/connections/", headers=headers).text
+            assert "<h2>Sharing</h2>" in page and "You do not need to connect an account of your own" in page
+            assert 'action="/connections/share"' not in page
+
+
+def test_people_with_the_same_display_name_can_be_distinguished_when_sharing(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        for person in ("third", "fourth"):
+            browser.get("/connections/", headers=cookie(auth, person, name="Same Name"))
+        page = browser.get("/connections/", headers=cookie(auth)).text
+    assert 'Same Name <span class="muted">(third)</span>' in page
+    assert 'Same Name <span class="muted">(fourth)</span>' in page
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_lost_or_damaged_saved_session_is_not_shown_as_connected(configured, missing):
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        assert browser.get("/connections/status", headers=cookie(auth)).json()["state"] == "connected"
+        blob = accounts.directory / account / "session.bin"
+        if missing:
+            blob.unlink()
+        else:
+            blob.write_bytes(b"damaged session")
+        expected = "sign_in_needed" if missing else "check_needed"
+        assert browser.get("/connections/status", headers=cookie(auth)).json()["state"] == expected
+        accounts.forget(account)  # the same result after rebuilding the reader, as on a restart
+        assert browser.get("/connections/status", headers=cookie(auth)).json()["state"] == expected
+
+
+def test_people_who_cannot_be_added_are_shown_with_the_reason(configured):
+    accounts, _, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    accounts.note_name("third", "Kim")
+    accounts.person("fourth")
+    accounts.note_name("fourth", "Lee")
+    third = accounts.control("third").read()
+    accounts.share("third", "fourth", third["epoch"], third["state"])
+    with client(portal) as browser:
+        page = browser.get("/connections/", headers=cookie(auth)).text
+    assert 'Kim <span class="muted">(third)</span>: has their own HKTVmall connection' in page
+    assert 'Lee <span class="muted">(fourth)</span>: uses Kim&#x27;s' in page
+    assert not [fields for action, fields in forms(page) if action.endswith("/share")]
+
+
 def test_every_viewer_route_denies_wrong_owner_bearer_and_forwarded_identity(configured):
     _, account, auth, portal = configured
     epoch = portal.accounts.control(account).require_active()
@@ -156,25 +319,28 @@ def test_every_viewer_route_denies_wrong_owner_bearer_and_forwarded_identity(con
                 == 404
             )
             assert browser.request(method, path + suffix, headers=cookie(auth, "first")).status_code == 404
-        assert portal.client.normal.calls == []
+        assert portal.client.calls == []
         assert browser.post(path + "/start", headers=cookie(auth)).status_code == 200
         assert browser.get(path + "/novnc/vnc.html", headers=cookie(auth)).status_code == 200
 
 
-def test_disconnect_preserves_ids_budgets_identity_and_generation_but_deletes_owned_credentials(configured):
+def test_disconnect_preserves_record_budgets_identity_sharing_and_generation_but_deletes_credentials(configured):
     accounts, account, auth, portal = configured
     service = accounts.get(account)
     old_epoch = accounts.control(account).require_active()
     retained = service.state.path
     before = retained.read_bytes() if retained.exists() else None
     with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
+        browser.submit(cookie(auth), "share", "third")
         assert browser.post("/connections/start", headers=cookie(auth)).status_code == 303
         assert browser.post("/connections/disconnect", headers=cookie(auth)).status_code == 303
     record = accounts.control(account).read()
     assert record["state"] == "disconnected" and record["provider_email"] == EMAIL
     assert record["owner"]["sub"] == "subject-second" and record["generation"] == 1
+    assert record["shared_with"] == ["third"]
     assert not (accounts.directory / account / "session.bin").exists()
-    assert accounts.account_for("second") == account
+    assert accounts.account_for("second") == account and accounts.account_for("third") == account
     assert (retained.read_bytes() if retained.exists() else None) == before
     with pytest.raises(HktvError, match="connection_disconnected"):
         accounts.get(account)
@@ -194,8 +360,9 @@ def test_wrong_account_reconnect_preserves_previous_sealed_bytes(configured):
     accounts, account, _, _ = configured
     path = accounts.directory / account / "session.bin"
     before = path.read_bytes()
+    epoch = accounts.control(account).require_active()
     with pytest.raises(HktvError, match="account_mismatch"):
-        accounts.adopt_owned(account, "initial", "different@example.com", cookies(), "Browser")
+        accounts.adopt_owned(account, epoch, "different@example.com", cookies(), "Browser")
     assert path.read_bytes() == before
 
 
@@ -205,181 +372,6 @@ def test_known_dead_session_does_not_look_connected(configured):
     generation, _, _ = session.checkout_client()
     session.mark("dead", generation)
     assert portal.status(account)["state"] == "sign_in_needed"
-
-
-def test_shared_account_use_does_not_grant_management(configured, tmp_path):
-    accounts, _, auth, _ = configured
-    accounts.settings.accounts_file.write_text(json.dumps({"first": DEFAULT, "second": DEFAULT}))
-    with pytest.raises(HktvError):
-        accounts.managers()
-    managers = tmp_path / "managers.json"
-    managers.write_text(json.dumps({DEFAULT: "first"}))
-    accounts.settings = dataclasses.replace(accounts.settings, managers_file=managers)
-    portal = Connections(accounts, auth=auth, client=Login())
-    assert accounts.resolve(BEARER_CLIENT, person="second") is accounts.default
-    assert accounts.resolve(BEARER_CLIENT, person="first") is accounts.default
-    with client(portal) as browser:
-        assert browser.get("/connections/status", headers=cookie(auth, "second")).status_code == 401
-        assert browser.post("/connections/start", headers=cookie(auth, "second")).status_code == 403
-        assert browser.get("/connections/status", headers=cookie(auth, "first")).status_code == 200
-    for person in (None, "unknown", ""):
-        with pytest.raises(HktvError):
-            accounts.resolve(BEARER_CLIENT, person=person)
-
-
-def test_default_disconnect_retains_snapshot_and_recovery_opens_a_real_window(configured):
-    accounts, _, auth, portal = configured
-    path = accounts.settings.snapshot_path
-    path.parent.mkdir(parents=True)
-    path.write_text("externally owned synthetic snapshot")
-    with client(portal) as browser:
-        assert browser.post("/connections/disconnect", headers=cookie(auth, "first")).status_code == 303
-        assert accounts.control(DEFAULT).read()["owner"] == {"issuer": auth.config.issuer, "sub": "subject-first"}
-        assert (
-            browser.get("/connections/status", headers=cookie(auth, "first", subject="replacement-subject")).status_code
-            == 401
-        )
-        page = browser.get("/connections/", headers=cookie(auth, "first"))
-        assert "retains this account's saved profile" in page.text
-        assert ">Connect<" in page.text
-        with pytest.raises(HktvError):
-            accounts.resolve(BEARER_CLIENT, person="first")
-        assert path.read_text() == "externally owned synthetic snapshot"
-        response = browser.post("/connections/start", headers=cookie(auth, "first"))
-        assert response.status_code == 303 and response.headers["location"].startswith(PUBLIC + "/connect/")
-        link = portal.relay.links(DEFAULT)[0]
-        portal.relay.start(link, "desktop")
-        assert link.window_id.startswith("m_")
-    assert accounts.control(DEFAULT).read()["state"] == "active"
-    assert path.read_text() == "externally owned synthetic snapshot"
-    assert portal.client.normal.calls == ["start"]
-
-
-def test_native_positive_signed_out_survives_reader_restart_and_new_generation_supersedes_it(configured, tmp_path):
-    from signin_window.sessions import AttemptBudget
-
-    from hktvmall_maintenance.keeper import IdentityKeeper
-    from hktvmall_maintenance.models import PersistenceError
-    from hktvmall_maintenance.outcomes import IdentityOutcome, SessionDead
-    from hktvmall_maintenance.state import TargetStateStore
-    from hktvmall_mcp.fsio import atomic_write_json
-    from hktvmall_mcp.server import build_accounts
-    from hktvmall_mcp.session import session_payload
-
-    accounts, _, auth, portal = configured
-    settings = accounts.settings
-    expected = accounts.default.session.expected_email
-    path = settings.snapshot_path
-    path.parent.mkdir(parents=True)
-    atomic_write_json(path, session_payload(1, expected, "Synthetic Browser", cookies(), time.time()))
-    accounts = build_accounts(settings)
-    portal = Connections(accounts, auth=auth, client=Login())
-    assert portal.status(DEFAULT)["state"] == "connected"
-    control = accounts.control(DEFAULT)
-    original_epoch = control.require_active()
-
-    class DeadBrowser:
-        def warm(self):
-            raise SessionDead()  # Actual positive native observation, not an outcome-label inference.
-
-    now = datetime.now(UTC)
-    keeper = IdentityKeeper(
-        target="hktvmall",
-        expected_email=expected,
-        export_dir=path.parent,
-        state=TargetStateStore(tmp_path / "keeper-state", utc_now=lambda: now),
-        budget=AttemptBudget(tmp_path / "keeper-budget", utc_now=lambda: now, error_type=PersistenceError),
-        readiness=lambda: pytest.fail("no automatic credential sign-in"),
-        open_browser=lambda: nullcontext(DeadBrowser()),
-        lease=nullcontext,
-        utc_now=lambda: now,
-        snapshot_generation=lambda _: 1,
-        connection_control=control,
-    )
-    accepted = path.read_bytes()
-    assert keeper.run(allow_credential_mint=False).outcome == IdentityOutcome.MINT_NOT_PERMITTED
-    assert path.read_bytes() == accepted
-    restarted = Connections(build_accounts(settings), auth=auth, client=Login())
-    assert restarted.status(DEFAULT)["state"] == "sign_in_needed"
-    # Failed/cancelled reconnect must not erase evidence about the retained generation.
-    control.resume()
-    assert restarted.status(DEFAULT)["state"] == "sign_in_needed"
-    barrier = control.suspend()
-    control.finish(barrier)
-    control.resume()
-    assert restarted.status(DEFAULT)["state"] == "sign_in_needed"
-    hint = control.path.with_suffix(".health.json").read_bytes()
-    with pytest.raises(HktvError):
-        control.note_signed_out(original_epoch, 2)
-    assert control.path.with_suffix(".health.json").read_bytes() == hint
-    # Verified publication of a newer generation makes the old fact inapplicable.
-    atomic_write_json(path, session_payload(2, expected, "Synthetic Browser", cookies("new"), time.time()))
-    assert Connections(build_accounts(settings), auth=auth, client=Login()).status(DEFAULT)["state"] == "connected"
-
-
-def test_signed_out_hint_cannot_be_lost_between_hint_and_control_atomic_renames(configured, monkeypatch):
-    import hktvmall_mcp.connections_state as module
-
-    accounts, _, _, _ = configured
-    control = accounts.control(DEFAULT)
-    old = control.require_active()
-    control.note_signed_out(old, 1)
-    write = module.atomic_write_json
-
-    def fail_control_commit(path, data):
-        if path == control.path:
-            raise OSError("synthetic interrupted control commit")
-        write(path, data)
-
-    monkeypatch.setattr(module, "atomic_write_json", fail_control_commit)
-    with pytest.raises(OSError):
-        control.resume()
-    assert control.read()["epoch"] == old
-    assert control.health(1) == "sign_in_needed"
-
-
-@pytest.mark.parametrize("resume_during_warm", [False, True])
-def test_maintenance_cannot_publish_after_disconnect_or_disconnect_resume(configured, tmp_path, resume_during_warm):
-    from signin_window.sessions import AttemptBudget
-
-    from hktvmall_maintenance.keeper import IdentityKeeper
-    from hktvmall_maintenance.models import PersistenceError
-    from hktvmall_maintenance.outcomes import IdentityOutcome
-    from hktvmall_maintenance.state import TargetStateStore
-
-    accounts, _, _, _ = configured
-    control = accounts.control(DEFAULT)
-    now = datetime.now(UTC)
-    writes = []
-
-    class Browser:
-        def warm(self):
-            epoch = control.suspend()
-            control.finish(epoch)
-            if resume_during_warm:
-                control.resume()
-            return "default@example.com"
-
-    keeper = IdentityKeeper(
-        target="hktvmall",
-        expected_email="default@example.com",
-        export_dir=tmp_path / "exports",
-        state=TargetStateStore(tmp_path / "maintenance", utc_now=lambda: now),
-        budget=AttemptBudget(tmp_path / "budget", utc_now=lambda: now, error_type=PersistenceError),
-        readiness=lambda: pytest.fail("no credential readiness during warm"),
-        open_browser=lambda: nullcontext(Browser()),
-        lease=nullcontext,
-        utc_now=lambda: now,
-        snapshot_writer=lambda *args: writes.append(args),
-        snapshot_generation=lambda path: 0,
-        connection_control=control,
-    )
-    result = keeper.run(allow_credential_mint=False)
-    assert result.outcome == IdentityOutcome.DISCONNECTED
-    assert result.exit_code == 0 and result.generation is None
-    assert writes == []
-    if not resume_during_warm:
-        assert keeper.run(allow_credential_mint=True).outcome == IdentityOutcome.DISCONNECTED
 
 
 def test_disconnected_controls_remain_effective_without_browser_configuration(configured):
@@ -402,7 +394,7 @@ def test_late_cookie_refresh_cannot_restore_a_disconnected_session(configured):
     assert not (accounts.directory / account / "session.bin").exists()
 
 
-def test_real_http_mcp_requires_bearer_and_exact_mapped_person(configured):
+def test_real_http_mcp_requires_bearer_and_a_verified_person(configured):
     from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
     from starlette.middleware import Middleware
 
@@ -413,39 +405,36 @@ def test_real_http_mcp_requires_bearer_and_exact_mapped_person(configured):
     verifier = StaticTokenVerifier(tokens={"backend-only": {"client_id": BEARER_CLIENT, "scopes": []}})
     mcp = server.create_server(accounts, auth=verifier, browser_auth=auth, login=Login())
     app = mcp.http_app(**server.HTTP_OPTIONS, middleware=[Middleware(BrowserRoutes, connections=mcp.connections)])
-    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "hktv_status", "arguments": {}}}
     headers = {"Accept": "application/json, text/event-stream", "Mcp-Protocol-Version": "2025-03-26"}
+
+    def call(tool, extra):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": {}}}
+        return browser.post("/mcp", json=body, headers=[*headers.items(), *extra])
+
     with TestClient(app) as browser:
-        assert browser.post("/mcp", json=body, headers={**headers, "X-Fleet-Person": "first"}).status_code == 401
-        for values in ([], ["unknown"], ["first", "second"]):
-            response = browser.post(
-                "/mcp",
-                json=body,
-                headers=[
-                    *headers.items(),
-                    ("Authorization", "Bearer backend-only"),
-                    *[("X-Fleet-Person", value) for value in values],
-                ],
+        assert call("hktv_status", [("X-Fleet-Person", "second")]).status_code == 401
+        for values in ([], ["Unknown!"], ["second", "third"], ["default"]):
+            response = call(
+                "hktv_status", [("Authorization", "Bearer backend-only")] + [("X-Fleet-Person", v) for v in values]
             )
             result = response.json()["result"]
             assert result["isError"] and "not_connected" in result["content"][0]["text"]
-        for person, account_label in (("first", DEFAULT), ("second", "s•••@example.com")):
-            response = browser.post(
-                "/mcp", json=body, headers={**headers, "Authorization": "Bearer backend-only", "X-Fleet-Person": person}
-            )
-            result = response.json()["result"]
-            assert not result.get("isError")
-            payload = result.get("structuredContent") or json.loads(result["content"][0]["text"])
-            assert payload["account"] == account_label
-        # MCP status and rejected retired entry routes allocate no human attempt.
+        result = call("hktv_status", [("Authorization", "Bearer backend-only"), ("X-Fleet-Person", "second")]).json()
+        payload = result["result"].get("structuredContent") or json.loads(result["result"]["content"][0]["text"])
+        assert payload["account"] == "s•••@example.com" and payload["connection"] == {
+            "owner": "second",
+            "shared": False,
+        }
+        link = call("hktv_connect", [("Authorization", "Bearer backend-only"), ("X-Fleet-Person", "second")]).json()
+        content = link["result"].get("structuredContent") or json.loads(link["result"]["content"][0]["text"])
+        assert content == {"url": PUBLIC + "/connections/", "expires_at": None}
+        # MCP calls and rejected retired entry routes allocate no human attempt.
         assert browser.get("/connect?req=retired").status_code == 404
         assert not mcp.connections.relay.links(account)
-        assert not mcp.connections.relay.links(DEFAULT)
-        assert mcp.connections.client.normal.calls == []
-        assert accounts.control(DEFAULT).read()["owner"] is None
+        assert mcp.connections.client.calls == []
 
 
-def test_production_http_cannot_restore_the_local_oauth_issuer(configured, monkeypatch):
+def test_production_http_refuses_browser_sign_in_without_oidc(configured, monkeypatch):
     from hktvmall_mcp import server
     from hktvmall_mcp.config import ConfigError
 
@@ -464,17 +453,25 @@ def test_missing_shared_control_mount_refuses_configuration(settings, tmp_path):
         dataclasses.replace(settings, controls_dir=tmp_path / "missing-controls")
 
 
-@pytest.mark.parametrize("raw", ["{}", "malformed", "[]", '{"version":true}'])
+@pytest.mark.parametrize(
+    "raw", ["{}", "malformed", "[]", '{"version":true}', '{"shared_with": "everyone"}', '{"shared_with": ["../x"]}']
+)
 def test_corrupt_control_state_never_reactivates_cached_account_access(configured, raw):
     accounts, account, _, _ = configured
     cached = accounts.get(account)
     control = accounts.control(account)
-    control.path.parent.mkdir(parents=True, exist_ok=True)
+    if raw.startswith('{"shared_with"'):
+        record = control.read()
+        record.update(json.loads(raw))
+        raw = json.dumps(record)
     control.path.write_text(raw)
     with pytest.raises(HktvError, match="connection_disconnected"):
         accounts.get(account)
     with pytest.raises(HktvError, match="connection_disconnected"):
         cached.session.checkout_client()
+    accounts.person("third")
+    with pytest.raises(HktvError, match="session_source_missing"):
+        accounts.resolve(BEARER_CLIENT, person="third")  # it might be the record that shares with them: no fallback
 
 
 def test_stale_owner_forms_and_cancel_cannot_mutate_new_attempt_or_credentials(configured):
@@ -485,6 +482,7 @@ def test_stale_owner_forms_and_cancel_cannot_mutate_new_attempt_or_credentials(c
     blob = accounts.directory / account / "session.bin"
     before = blob.read_bytes()
     with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
         first = browser.post("/connections/start", headers=cookie(auth), data=stale)
         assert first.status_code == 303
         old_epoch = control.read()["epoch"]
@@ -494,7 +492,8 @@ def test_stale_owner_forms_and_cancel_cannot_mutate_new_attempt_or_credentials(c
         for action in ("start", "disconnect"):
             rejected = browser.post("/connections/" + action, headers=cookie(auth), data=stale)
             assert rejected.status_code == 409 and 'href="/connections/"' in rejected.text
-            assert browser.get("/connections/", headers=cookie(auth)).status_code == 200
+        rejected = browser.post("/connections/share", headers=cookie(auth), data={**stale, "person": "third"})
+        assert rejected.status_code == 409
         assert (
             browser.post(first.headers["location"].replace(PUBLIC, "") + "/cancel", headers=cookie(auth)).status_code
             == 404
@@ -515,9 +514,10 @@ def test_stale_owner_forms_and_cancel_cannot_mutate_new_attempt_or_credentials(c
 
 def test_owner_forms_require_captured_epoch_and_state(configured):
     accounts, account, auth, portal = configured
-    before = accounts.control(account).read()
     with client(portal) as browser:
-        for action in ("start", "disconnect"):
+        browser.get("/connections/", headers=cookie(auth))  # records the display name
+        before = accounts.control(account).read()
+        for action in ("start", "disconnect", "share", "unshare", "leave"):
             assert (
                 browser.post(
                     "/connections/" + action, headers=cookie(auth), data={"epoch": before["epoch"]}
@@ -532,10 +532,39 @@ def test_signed_out_home_goes_straight_to_sign_in_and_owner_links_open_the_windo
     with client(portal) as browser:
         home = browser.get("/connections/", follow_redirects=False)
         assert home.status_code == 303 and home.headers["location"].endswith("/connections/login")
-        unmapped = browser.get("/connections/", headers=cookie(auth, "nobody"), follow_redirects=False)
-        assert unmapped.status_code == 200 and "one shared household account" in unmapped.text
-        assert "nothing you need to do" in unmapped.text and "cannot manage" not in unmapped.text
-        assert 'action="/connections/logout"' in unmapped.text and "Sign out" in unmapped.text
+        browser.post("/connections/start", headers=cookie(auth))  # pins the owner
+        mismatch = browser.get("/connections/", headers=cookie(auth, subject="another-subject"))
+        assert mismatch.status_code == 200 and "cannot manage this HKTVmall record" in mismatch.text
+        assert 'action="/connections/logout"' in mismatch.text
         made = browser.post("/connections/start", headers=cookie(auth), follow_redirects=False)
         attempt = browser.get(urlsplit(made.headers["location"]).path, headers=cookie(auth))
         assert attempt.status_code == 200 and '"autoStart": true' in attempt.text
+
+
+def test_disconnect_deletes_a_session_it_cannot_read(configured):
+    accounts, account, auth, portal = configured
+    blob = accounts.directory / account / "session.bin"
+    blob.write_bytes(b"not a sealed session")  # e.g. sealed with a key since rotated
+    before = accounts.control(account).read()["generation"]
+    with client(portal) as browser:
+        assert browser.post("/connections/disconnect", headers=cookie(auth)).status_code == 303
+    record = accounts.control(account).read()
+    assert record["state"] == "disconnected" and record["generation"] > before
+    assert not blob.exists()
+    with client(portal) as browser:
+        assert browser.post("/connections/start", headers=cookie(auth)).status_code == 303  # reconnecting works
+
+
+def test_too_many_sign_in_links_get_a_page_not_a_crash(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        codes = [browser.post("/connections/start", headers=cookie(auth)).status_code for _ in range(8)]
+    assert codes[: portal.relay.links_per_hour] == [303] * portal.relay.links_per_hour
+    assert codes[-1] == 429
+
+
+def test_oversized_forms_are_refused(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        made = browser.post("/connections/disconnect", headers=cookie(auth), data={"epoch": "x" * 5000, "state": "a"})
+    assert made.status_code == 409

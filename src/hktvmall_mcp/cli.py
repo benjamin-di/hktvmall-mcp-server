@@ -7,7 +7,7 @@ hktvmall-mcp login            sign in to HKTVmall in a browser window; the sessi
 hktvmall-mcp logout           delete the saved session and the sign-in window's browser profile
 hktvmall-mcp status           the saved session and today's budget (asks HKTVmall nothing)
 hktvmall-mcp health           exit 0 when the HTTP server's /health answers (container health checks)
-hktvmall-mcp admin ...        invites and connected accounts of a server that hosts several people
+hktvmall-mcp admin ...        people and their connections on a server that hosts several people
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("status", help="show the saved session and today's budget")
     health = commands.add_parser("health", help="check the HTTP server's /health")
     health.add_argument("--url", default="http://127.0.0.1:8000/health")
-    commands.add_parser("admin", help="invites and connected accounts (multi-account servers)")
+    commands.add_parser("admin", help="people and their connections (people mode)")
     options = parser.parse_args(args)
 
     if options.command == "health":

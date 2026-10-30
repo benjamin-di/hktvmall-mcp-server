@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -179,10 +180,53 @@ def test_stdio_answers_on_stdout_and_logs_only_to_stderr(tmp_path):
     assert (info["name"], info["version"]) == ("hktvmall", __version__)  # ours, not FastMCP's
     assert "hktv_search" in {t["name"] for t in replies[2]["result"]["tools"]}
     error = json.loads(replies[3]["result"]["content"][0]["text"])["error"]
-    assert error["code"] == "not_signed_in" and "hktvmall-mcp login" in error["next_step"]
+    assert error["code"] == "not_signed_in" and "hktv_connect" in error["next_step"]
+    assert error["action"] == "human_account_check"
 
 
 def _cookie(name: str, value: str) -> http.cookiejar.Cookie:
     return http.cookiejar.Cookie(
         0, name, value, None, False, "www.hktvmall.com", True, False, "/", True, True, None, False, None, None, {}
     )
+
+
+def _jsession(value):
+    return [{"name": "JSESSIONID", "value": value, "domain": "www.hktvmall.com", "path": "/", "secure": True,
+             "expires": None}]  # fmt: skip
+
+
+def test_a_login_after_logout_reaches_a_running_server(tmp_path):
+    from hktvmall_mcp.session import LocalSession
+
+    path = tmp_path / "session.json"
+    for value in ("A1", "A2", "A3"):
+        LocalSession(path).write("a@example.com", "UA", _jsession(value))
+    server = LocalSession(path)
+    generation, _, _ = server.checkout_client()
+    server.mark("live", generation)
+    LocalSession(path).clear()
+    assert LocalSession(path).write("b@example.com", "UA", _jsession("B1")) > generation
+    time.sleep(0.01)
+    _, jar, _ = server.checkout_client()
+    assert [c.value for c in jar] == ["B1"] and server.account_email == "b@example.com"
+
+
+def test_cookies_that_cannot_be_read_back_are_never_persisted(tmp_path):
+    from hktvmall_mcp.session import LocalSession
+
+    path = tmp_path / "session.json"
+    LocalSession(path).write("a@example.com", "UA", _jsession("S"))
+    session = LocalSession(path)
+    generation, jar, _ = session.checkout_client()
+    session.mark("live", generation)
+    jar.set_cookie(http.cookiejar.Cookie(0, "lastSearch", "cafÃ©", None, False, "www.hktvmall.com", False,
+                                         False, "/", True, True, None, True, None, None, {}))  # fmt: skip
+    session.store_jar(jar, generation)
+    time.sleep(0.01)
+    assert LocalSession(path).checkout_client()[0] == generation  # the file stays readable
+    jar.set_cookie(http.cookiejar.Cookie(0, "access_token", "fresh", None, False, "www.hktvmall.com", False,
+                                         False, "/", True, True, None, True, None, None, {}))  # fmt: skip
+    session.store_jar(jar, generation)
+    time.sleep(0.01)
+    _, stored, _ = LocalSession(path).checkout_client()
+    assert {c.name: c.value for c in stored} == {"JSESSIONID": "S", "access_token": "fresh"}  # later saves go on

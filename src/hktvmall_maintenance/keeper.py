@@ -243,11 +243,19 @@ class IdentityKeeper:
         try:
             with self._lease():
                 if self._recover is not None:
-                    self._recover()
+                    try:
+                        self._recover()
+                    except Exception:  # an interrupted sign-in's state could not be settled
+                        return self._infrastructure(InfrastructureReason.STATE, signed_in=False)
                 epoch = self._connection_control.require_active() if self._connection_control is not None else None
                 result = self._run_leased(allow_credential_mint=allow_credential_mint, connection_epoch=epoch)
                 if self._connection_control is not None and result.outcome != IdentityOutcome.PUBLISHED:
-                    self._connection_control.note_attention(epoch, self._snapshot_generation(self._export_dir))
+                    try:
+                        self._connection_control.note_attention(epoch, self._snapshot_generation(self._export_dir))
+                    except HktvError:
+                        raise
+                    except Exception:
+                        pass  # a health hint only: the run's own outcome (with its hold) still stands
                 return result
         except LeaseBusyError:
             return self._result(IdentityOutcome.SKIPPED_LEASE_BUSY)

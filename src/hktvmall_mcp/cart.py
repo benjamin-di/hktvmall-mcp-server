@@ -116,7 +116,9 @@ def view(data: dict[str, Any]) -> dict[str, Any]:
         if g["mode"] == "hktv-standard-delivery" and threshold and not g["free_delivery"]:
             g["amount_to_free_delivery"] = money(max(0, threshold - g["subtotal"]["cents"]))
             g["delivery_fee"] = money(hktv_fee)
-    merchant_fees = sum(_amount(f.get("fee")) or 0 for f in data.get("merchantDeliveryFeeList") or [])
+    merchant_fees = sum(
+        _amount(f.get("fee")) or 0 for f in data.get("merchantDeliveryFeeList") or [] if isinstance(f, dict)
+    )
     subtotal = _amount(data.get("cartSubTotal")) or 0
     # hktvDeliveryFee is the "HKTV Delivery Fee" line of HKTVmall's order summary and follows the threshold;
     # deliveryCost only fills the summary's "HK$40 below HK$88" tip, so it is a fallback for an older payload.

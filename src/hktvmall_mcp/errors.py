@@ -1,7 +1,9 @@
-"""The error taxonomy (README "Troubleshooting"). Tools report ``{code, next_step, retryable}`` and nothing else.
+"""The error taxonomy (README "Troubleshooting"). Tools report ``{code, next_step, retryable, action}`` and nothing
+else.
 
 Exception text never reaches a tool result: every message a model sees comes from the fixed
-``NEXT_STEP`` table below (plus, for ``invalid_argument``, our own validation text).
+``NEXT_STEP`` table below (plus, for ``invalid_argument``, our own validation text, and for ``owner_reconnect``, the
+owner's person id).
 """
 
 from __future__ import annotations
@@ -9,33 +11,38 @@ from __future__ import annotations
 from typing import Any
 
 NEXT_STEP: dict[str, str] = {
-    "connection_disconnected": "Server access to this account is stopped. Open My connections to resume or reconnect.",
+    "connection_disconnected": (
+        "Server access to this HKTVmall connection is stopped. Call hktv_connect and give the person its link to "
+        "reconnect."
+    ),
     "invalid_argument": "Fix the arguments and call again.",
     "not_signed_in": (
-        "No HKTVmall account is signed in yet; search still works. Ask the person to run `hktvmall-mcp login` "
-        "on the computer this server runs on and log in to HKTVmall in the window that opens."
+        "No HKTVmall account is connected yet; search still works. Call hktv_connect and give the person its link: "
+        "they connect their own HKTVmall account there, or ask a household member to share theirs."
     ),
     "session_expired": (
-        "HKTVmall ended the sign-in. If this server runs on the person's computer, ask them to run "
-        "`hktvmall-mcp login` again; for a connected person, ask them to reconnect the HKTVmall connector; a "
-        "server that reads a session snapshot needs a newer one. Do not retry until hktv_status shows a newer "
-        "generation."
+        "HKTVmall ended the sign-in. Call hktv_connect and give the person its link to reconnect. Do not retry "
+        "until hktv_status shows signed_in."
     ),
     "not_connected": (
-        "This identity has no configured HKTVmall account. Ask the administrator to check its account mapping, "
-        "then open My connections to sign in."
+        "This person has no access to HKTVmall here. Tell them; the administrator decides who has access. If you "
+        "are an AI agent, do not change the server's settings."
+    ),
+    "owner_reconnect": (
+        "{owner} shares their HKTVmall connection with this person, and it needs {owner} to reconnect it (they open "
+        "the link from hktv_connect). Tell the person to ask {owner}; there is nothing they can fix themselves."
     ),
     "account_mismatch": (
-        "HKTVmall shows a different account than the one this connection was made with. Ask the person to "
-        "reconnect the HKTVmall connector and log in again; do not use the basket until then."
+        "HKTVmall shows a different account than the one this connection was made with. Call hktv_connect and ask "
+        "the person to reconnect; do not use the basket until then."
     ),
     "session_source_missing": (
-        "The session snapshot this server reads is missing or unreadable. Tell the operator to check the program "
-        "that publishes it and its mount."
+        "Connection data this server reads (a saved connection, or the session snapshot and its mount) is missing "
+        "or unreadable. Tell the operator; there is nothing the person can fix."
     ),
     "session_source_invalid": (
-        "The saved HKTVmall session is invalid or belongs to another account. Ask the person to run "
-        "`hktvmall-mcp login` again, or the operator to check the session snapshot's configuration."
+        "The saved HKTVmall session is invalid or belongs to another account. Call hktv_connect and ask the person "
+        "to sign in again, or the operator to check the session snapshot's configuration."
     ),
     "blocked": (
         "HKTVmall pushed back. No HKTVmall calls until the pause ends (hktv_status shows when). Do not retry now."
@@ -62,6 +69,17 @@ NEXT_STEP: dict[str, str] = {
 
 RETRYABLE = frozenset({"busy", "upstream_error", "internal_error"})
 AGENT_INPUT_CODES = frozenset({"invalid_argument"})
+# Sign-in problems a person must fix; a member of a shared connection gets owner_reconnect instead.
+SIGN_IN_CODES = frozenset(
+    {"not_signed_in", "session_expired", "connection_disconnected", "account_mismatch", "session_source_invalid"}
+)
+# What the agent should do (the fleet's closed set): wait, have a person act, or have the operator repair.
+ACTION: dict[str, str] = {
+    **{code: "human_account_check" for code in SIGN_IN_CODES | {"owner_reconnect", "not_connected"}},
+    "basket_unreadable": "human_account_check",
+    **{code: "retry_later" for code in ("blocked", "budget_exhausted", "busy", "upstream_error", "internal_error")},
+    **{code: "repair_local_infrastructure" for code in ("session_source_missing", "schema_changed")},
+}
 
 
 class HktvError(Exception):
@@ -79,7 +97,14 @@ class HktvError(Exception):
         next_step = NEXT_STEP[self.code]
         if self.code == "invalid_argument" and self.detail:
             next_step = f"{self.detail}. {next_step}"
-        return {"code": self.code, "next_step": next_step, "retryable": self.code in RETRYABLE}
+        if self.code == "owner_reconnect":
+            next_step = next_step.format(owner=self.detail or "The owner")
+        return {
+            "code": self.code,
+            "next_step": next_step,
+            "retryable": self.code in RETRYABLE,
+            "action": ACTION.get(self.code, "none"),
+        }
 
 
 def invalid(detail: str) -> HktvError:

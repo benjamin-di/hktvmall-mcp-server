@@ -234,37 +234,3 @@ def test_stored_hold_needs_attention_without_inventing_signed_out_proof(custodia
     control.note_signed_out(epoch, 1)
     assert keeper.run(allow_credential_mint=True).outcome == IdentityOutcome.HELD
     assert control.health(1) == "sign_in_needed"  # The weaker outcome never hides stronger evidence.
-
-
-def test_routed_raw_id_namespace_cannot_confuse_default_and_linked_windows():
-    from signin_window.client import LoginUnavailable
-
-    from hktvmall_mcp.login_client import RoutedLoginClient
-
-    class Backend:
-        def __init__(self):
-            self.calls = []
-
-        def start(self, *args, **kwargs):
-            return {"id": "m_" + "x" * 22}
-
-        def state(self, window):
-            self.calls.append(window)
-            return {"state": "waiting"}
-
-        def result(self, window):
-            self.calls.append("result")
-            return {"synthetic": True}
-
-    normal, managed = Backend(), Backend()
-    client = RoutedLoginClient(normal, managed)
-    linked = client.start(key="acct_aaaaaaaaaaaa")["id"]
-    default = client.start(key="default")["id"]
-    assert len(linked) <= 40 and len(default) <= 40
-    client.state(linked)
-    client.state(default)
-    assert normal.calls == managed.calls == ["m_" + "x" * 22]
-    assert client.result(default) is None and "result" not in managed.calls
-    assert client.result(linked) == {"synthetic": True}
-    with pytest.raises(LoginUnavailable):
-        client.state("unknown-namespace")

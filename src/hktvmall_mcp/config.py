@@ -16,6 +16,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+RETIRED = (
+    "HKTVMALL_CONNECTIONS_ACCOUNTS_FILE",
+    "HKTVMALL_CONNECTIONS_MANAGERS_FILE",
+    "HKTVMALL_DEFAULT_LOGIN_URL",
+)
+
 
 class ConfigError(Exception):
     """Bad or missing configuration; raised at startup only."""
@@ -39,14 +45,11 @@ class Settings:
     account_daily_budget: int = 500  # each connected person's
     total_daily_budget: int = 4000  # every account together: they share one IP address
     session_key: bytes | None = field(default=None, repr=False)  # connected accounts are off without it
-    login_url: str | None = None  # the login service (hktvmall_login); the connect pages are off without it
-    default_login_url: str | None = None  # private kept backend in the default-account custodian
+    login_url: str | None = None  # the login service (hktvmall_login); the Connections page is off without it
     login_token: str | None = field(default=None, repr=False)
-    public_url: str | None = None  # where people open the connect pages (invite links)
-    trusted_account_header: str | None = None
-    accounts_file: Path | None = None
-    managers_file: Path | None = None
-    controls_dir: Path | None = None
+    public_url: str | None = None  # where people open the Connections page
+    trusted_account_header: str | None = None  # set: people mode, the gateway names the verified person
+    controls_dir: Path | None = None  # the default account's controls, shared with its custodian
 
     def __post_init__(self) -> None:
         if (self.snapshot_path is None) != (self.expected_email is None):
@@ -62,10 +65,16 @@ class Settings:
             raise ConfigError("HKTVMALL_EXPECTED_EMAIL must be the snapshot account's email")
         if self.login_url and (not self.login_token or len(self.login_token) < 32 or not self.session_key):
             raise ConfigError("HKTVMALL_LOGIN_URL needs HKTVMALL_LOGIN_TOKEN (32+ characters) and HKTVMALL_SESSION_KEY")
-        if self.trusted_account_header and (
-            not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9-]{0,63}", self.trusted_account_header) or self.accounts_file is None
-        ):
-            raise ConfigError("Trusted account routing requires a header name and reviewed account bindings")
+        if self.trusted_account_header is not None:
+            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9-]{0,63}", self.trusted_account_header):
+                raise ConfigError("HKTVMALL_TRUSTED_ACCOUNT_HEADER must be a header name")
+            if self.session_key is None:
+                raise ConfigError("People mode (HKTVMALL_TRUSTED_ACCOUNT_HEADER) needs HKTVMALL_SESSION_KEY")
+            if self.snapshot_path is not None or self.controls_dir is not None:
+                raise ConfigError(
+                    "People mode keeps every account in its person's record: unset HKTVMALL_SESSION_SNAPSHOT, "
+                    "HKTVMALL_EXPECTED_EMAIL and HKTVMALL_CONNECTIONS_CONTROLS_DIR"
+                )
         if self.controls_dir is not None and (
             not self.controls_dir.is_absolute() or ".." in self.controls_dir.parts or not self.controls_dir.is_dir()
         ):
@@ -79,6 +88,11 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         env = os.environ if env is None else env
+        retired = sorted(name for name in RETIRED if (env.get(name) or "").strip())
+        if retired:
+            # Operator-assigned account use is gone: an image that read these would hand one person's account
+            # to another without the owner's say (docs/PERMISSIONS.md).
+            raise ConfigError(f"Retired setting(s) {', '.join(retired)}: people share their own connections now")
         snapshot = (env.get("HKTVMALL_SESSION_SNAPSHOT") or "").strip()
         email = (env.get("HKTVMALL_EXPECTED_EMAIL") or "").strip()
         state_dir = (env.get("HKTVMALL_STATE_DIR") or "").strip()
@@ -92,16 +106,9 @@ class Settings:
             total_daily_budget=_int(env, "HKTVMALL_TOTAL_DAILY_BUDGET", 4000, 0, 1_000_000),
             session_key=_key(env),
             login_url=_internal_url(env),
-            default_login_url=_internal_url(env, "HKTVMALL_DEFAULT_LOGIN_URL"),
             login_token=(env.get("HKTVMALL_LOGIN_TOKEN") or "").strip() or None,
             public_url=(env.get("HKTVMALL_PUBLIC_URL") or "").strip().rstrip("/") or None,
             trusted_account_header=(env.get("HKTVMALL_TRUSTED_ACCOUNT_HEADER") or "").strip().lower() or None,
-            accounts_file=Path(env["HKTVMALL_CONNECTIONS_ACCOUNTS_FILE"])
-            if env.get("HKTVMALL_CONNECTIONS_ACCOUNTS_FILE")
-            else None,
-            managers_file=Path(env["HKTVMALL_CONNECTIONS_MANAGERS_FILE"])
-            if env.get("HKTVMALL_CONNECTIONS_MANAGERS_FILE")
-            else None,
             controls_dir=Path(env["HKTVMALL_CONNECTIONS_CONTROLS_DIR"])
             if env.get("HKTVMALL_CONNECTIONS_CONTROLS_DIR")
             else None,

@@ -165,3 +165,51 @@ def test_writer_export_failure_is_verify_failed_not_infrastructure(
     assert result.reason == reason
     assert store.load("hktvmall").hold is None
     assert (store.load("hktvmall").last_generation == 1) is (reason is None)
+
+
+def _keeper(tmp_path: Path, browser, **kwargs) -> IdentityKeeper:
+    return IdentityKeeper(
+        target="hktvmall",
+        expected_email=EMAIL,
+        export_dir=tmp_path / "export",
+        state=TargetStateStore(tmp_path / "state", utc_now=lambda: NOW),
+        budget=CredentialBudget(tmp_path / "budget", utc_now=lambda: NOW),
+        readiness=lambda: ProviderReadiness(provider="hktvmall"),
+        open_browser=lambda: nullcontext(browser),
+        lease=nullcontext,
+        utc_now=lambda: NOW,
+        **kwargs,
+    )
+
+
+def test_a_failed_recovery_is_reported_as_state_not_configuration(tmp_path: Path) -> None:
+    def recover():
+        raise OSError("unreadable")
+
+    result = _keeper(tmp_path, object(), recover=recover).run(allow_credential_mint=True)
+    assert result.outcome is IdentityOutcome.INFRASTRUCTURE_ERROR and result.reason == "state"
+
+
+def test_an_unrecordable_attention_hint_keeps_the_runs_own_outcome(tmp_path: Path) -> None:
+    class Browser:
+        def warm(self):
+            raise SessionDead()
+
+        def sign_in(self):
+            raise SignInHold(HoldReason.OTP_MAIL_TIMEOUT)
+
+    class Control:
+        def require_active(self, epoch=None):
+            return "epoch"
+
+        def active(self, epoch):
+            return nullcontext()
+
+        def note_signed_out(self, epoch, generation):
+            pass
+
+        def note_attention(self, epoch, generation):
+            raise OSError("health file unwritable")
+
+    result = _keeper(tmp_path, Browser(), connection_control=Control()).run(allow_credential_mint=True)
+    assert result.outcome is IdentityOutcome.HELD and result.hold_id

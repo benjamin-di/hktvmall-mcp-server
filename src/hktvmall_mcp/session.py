@@ -24,7 +24,7 @@ from typing import Any
 
 from .errors import HktvError
 from .fsio import atomic_write_bytes, locked, read_private
-from .snapshot import MAX_SNAPSHOT, Snapshot, SnapshotError, parse_snapshot, read_snapshot
+from .snapshot import MAX_SNAPSHOT, Snapshot, SnapshotError, cookie_ok, parse_snapshot, read_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -286,8 +286,12 @@ class OwnedSession(SessionStore):
                 with self.write_guard(), locked(self.lock_path):
                     if self._read().generation != generation:
                         return  # a newer login won; the next call adopts it
-                    payload = session_payload(generation, self.expected_email, held.user_agent, cookies, self._clock())
-                    atomic_write_bytes(self.snapshot_path, self._encode(json.dumps(payload).encode()))
+                    # a cookie the file cannot hold (a non-ASCII value, an absurd expiry) is kept in memory only
+                    stored = [cookie for cookie in cookies if cookie_ok(cookie)]
+                    payload = session_payload(generation, self.expected_email, held.user_agent, stored, self._clock())
+                    raw = json.dumps(payload).encode()
+                    parse_snapshot(raw, self.expected_email, self._clock())  # never persist what cannot be read back
+                    atomic_write_bytes(self.snapshot_path, self._encode(raw))
             except (SnapshotError, OSError, HktvError) as exc:  # a disconnected session may finish an admitted call
                 log.error("could not persist the session (%s)", type(exc).__name__)
 
@@ -317,11 +321,26 @@ class LocalSession(OwnedSession):
     def never_signed_in(self) -> bool:
         return not self.snapshot_path.exists()
 
+    @property
+    def _watermark(self) -> Path:
+        return self.lock_path.with_name(".session.generation")
+
+    def _current_generation(self) -> int:
+        """Above any session ever written here: a running server only adopts a newer generation, so a login after
+        a logout must not start again at 1."""
+        try:
+            floor = int(self._watermark.read_text(encoding="ascii"))
+        except (OSError, ValueError):
+            floor = 0
+        return max(super()._current_generation(), floor)
+
     def clear(self) -> bool:
         """Forget the saved session (``hktvmall-mcp logout``)."""
         with locked(self.lock_path):
+            generation = self._current_generation()
             try:
                 self.snapshot_path.unlink()
             except FileNotFoundError:
                 return False
+            atomic_write_bytes(self._watermark, f"{generation}\n".encode())
         return True

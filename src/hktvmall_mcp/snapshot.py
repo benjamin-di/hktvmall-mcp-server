@@ -54,6 +54,32 @@ def _printable(value: Any, maximum: int, *, empty: bool = False) -> bool:
     )
 
 
+def cookie_ok(cookie: Any) -> bool:
+    """One stored cookie as a session file may hold it (the HKTVmall domain, printable ASCII, sane sizes)."""
+    if not isinstance(cookie, dict) or "expires" not in cookie:
+        return False
+    name, value, domain, path = (cookie.get(key) for key in ("name", "value", "domain", "path"))
+    secure, expires = cookie.get("secure"), cookie.get("expires")
+    return not (
+        not isinstance(name, str)
+        or not COOKIE_NAME.fullmatch(name)
+        or not _printable(value, 16 * 1024, empty=True)
+        or ";" in value
+        or not isinstance(domain, str)
+        or not DOMAIN.fullmatch(domain.lower())
+        or any(
+            not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+            for label in domain.lstrip(".").split(".")
+        )
+        or not (domain.lstrip(".").lower() == "hktvmall.com" or domain.lower().endswith(".hktvmall.com"))
+        or not _printable(path, 2048)
+        or not path.startswith("/")
+        or ";" in path
+        or type(secure) is not bool
+        or (expires is not None and (type(expires) is not int or not 0 <= expires <= 253_402_300_799))
+    )
+
+
 def parse_snapshot(raw: bytes, expected_email: str, now: float) -> Snapshot:
     """Strict validation: an invalid cookie invalidates the whole snapshot, rather than dropping it."""
     if len(raw) > MAX_SNAPSHOT:
@@ -92,30 +118,10 @@ def parse_snapshot(raw: bytes, expected_email: str, now: float) -> Snapshot:
     seen = set()
     has_session = False
     for cookie in cookies:
-        if not isinstance(cookie, dict):
+        if not cookie_ok(cookie):
             raise SnapshotError()
-        name, value, domain, path = (cookie.get(key) for key in ("name", "value", "domain", "path"))
-        secure, expires = cookie.get("secure"), cookie.get("expires")
-        if (
-            not isinstance(name, str)
-            or not COOKIE_NAME.fullmatch(name)
-            or not _printable(value, 16 * 1024, empty=True)
-            or ";" in value
-            or not isinstance(domain, str)
-            or not DOMAIN.fullmatch(domain.lower())
-            or any(
-                not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
-                for label in domain.lstrip(".").split(".")
-            )
-            or not (domain.lstrip(".").lower() == "hktvmall.com" or domain.lower().endswith(".hktvmall.com"))
-            or not _printable(path, 2048)
-            or not path.startswith("/")
-            or ";" in path
-            or type(secure) is not bool
-            or (expires is not None and (type(expires) is not int or not 0 <= expires <= 253_402_300_799))
-            or "expires" not in cookie
-        ):
-            raise SnapshotError()
+        name, value, domain, path = (cookie[key] for key in ("name", "value", "domain", "path"))
+        secure, expires = cookie["secure"], cookie["expires"]
         domain = domain.lower()
         key = (domain, path, name)
         if key in seen:

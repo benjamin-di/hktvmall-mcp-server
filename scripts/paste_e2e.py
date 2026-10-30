@@ -5,7 +5,9 @@ field, in a headed Chromium on the login's virtual display), and the server (``h
 Then the owner authenticates through signed synthetic OIDC, starts the connection and opens its live view in a
 headless Chromium. A second owner is denied access. The owner puts text on the clipboard, presses Ctrl+V and checks it
 arrived in the remote field, typed. Clipboard *reading* is not granted to the page, so the text can only have come
-from the browser's own paste event. Closing the page retains a resumable window; explicit cancellation closes it.
+from the browser's own paste event. Closing the page retains a resumable window; explicit cancellation closes it. The
+completed sign-in is saved; the owner shares the connection with a second person, whose MCP calls then use it until
+they stop using it on their own page; disconnect survives a restart.
 
 Needs Xvfb, x11vnc, patchright's Chromium and noVNC's files (the login image has them all):
 
@@ -137,13 +139,9 @@ async def main() -> int:
                 "HKTVMALL_LOGIN_URL": f"http://127.0.0.1:{login_port}",
                 "HKTVMALL_LOGIN_TOKEN": LOGIN_TOKEN,
                 "HKTVMALL_PUBLIC_URL": base,
+                "HKTVMALL_TRUSTED_ACCOUNT_HEADER": "x-fleet-person",
             }
         )
-        bindings = state / "accounts.json"
-        bindings.write_text(json.dumps({"second": "acct_aaaaaaaaaaaa"}))
-        import dataclasses
-
-        settings = dataclasses.replace(settings, accounts_file=bindings, trusted_account_header="x-fleet-person")
         accounts = build_accounts(settings)
         static = require_bearer({"MCP_BEARER_TOKEN": BEARER})
         provider = Provider(issuer=base)
@@ -182,7 +180,8 @@ async def main() -> int:
         page = await context.new_page()
         await page.goto(base + "/connections/login?reauth=1")
         await page.wait_for_url(base + "/connections/")
-        await page.get_by_role("button", name="Connect", exact=True).click()
+        await page.get_by_text("No HKTVmall account connected yet").wait_for()
+        await page.get_by_role("button", name="Connect HKTVmall", exact=True).click()
         await page.wait_for_url(base + "/connect/*")
         # Owner-bound: the window opens on its own, without an intro to click through.
         frame_element = await page.wait_for_selector("iframe", timeout=60_000)
@@ -242,7 +241,7 @@ async def main() -> int:
             return 1
         print("page closure retained the window; explicit cancellation closed it")
         await page.goto(base + "/connections/")
-        await page.get_by_role("button", name="Connect", exact=True).click()
+        await page.get_by_role("button", name="Connect HKTVmall", exact=True).click()
         await page.wait_for_url(base + "/connect/*")
         # Owner-bound: the window opens on its own, without an intro to click through.
         await page.wait_for_selector("iframe")
@@ -252,7 +251,7 @@ async def main() -> int:
             await asyncio.sleep(0.05)
         remote["finish"].set()
         await page.close(run_before_unload=True)
-        saved = state / "accounts" / "acct_aaaaaaaaaaaa" / "session.bin"
+        saved = state / "people" / "second" / "session.bin"
         for _ in range(200):
             if saved.exists():
                 break
@@ -260,16 +259,52 @@ async def main() -> int:
         assert saved.exists(), "page closure lost the completed sign-in"
         page = await context.new_page()
         await page.goto(base + "/connections/")
-        await page.get_by_text("Connection saved", exact=True).wait_for()
-        await page.get_by_role("button", name="Disconnect HKTVmall", exact=True).click()
+        await page.get_by_role("status").filter(has_text="Connected").wait_for()
+        print("completed session survived page closure")
+
+        async def connection(person):
+            body = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "hktv_status", "arguments": {}},
+            }
+            reply = await context.request.post(
+                base + "/mcp",
+                data=json.dumps(body),
+                headers={
+                    "Authorization": f"Bearer {BEARER}",
+                    "X-Fleet-Person": person,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Mcp-Protocol-Version": "2025-03-26",
+                },
+            )
+            result = (await reply.json())["result"]
+            return (result.get("structuredContent") or json.loads(result["content"][0]["text"]))["connection"]
+
+        assert await connection("first") == {"owner": "first", "shared": False}  # nothing shared by default
+        await page.reload()
+        await page.get_by_role("button", name="Share", exact=True).click()
+        await page.get_by_text("✓ Example One").wait_for()
+        assert await connection("first") == {"owner": "second", "shared": True}
+        await wrong.goto(base + "/connections/")
+        await wrong.get_by_text("Using Example One's HKTVmall account.").wait_for()
+        assert await wrong.get_by_role("button", name="Disconnect", exact=True).count() == 0
+        await wrong.get_by_role("button", name="Stop using", exact=True).click()
+        await wrong.get_by_text("No HKTVmall account connected yet").wait_for()
+        assert await connection("first") == {"owner": "first", "shared": False}
+        print("the owner shared from the page; the member used the household account, then stopped using it")
+        await page.reload()
+        await page.get_by_role("button", name="Disconnect", exact=True).click()
         await page.get_by_text("Server access stopped", exact=True).wait_for()
         assert not saved.exists()
         restarted = build_accounts(settings)
-        assert restarted.control("acct_aaaaaaaaaaaa").read()["state"] == "disconnected"
+        assert restarted.control("second").read()["state"] == "disconnected"
         signed_out = await context.request.post(base + "/connections/logout", headers={"Origin": base}, max_redirects=0)
         assert signed_out.status == 200 and "/connections/login" in await signed_out.text()
         assert (await context.request.get(base + "/connections/status")).status == 401
-        print("completed session survived page closure; disconnect survived restart and logout ended browser access")
+        print("disconnect survived restart and logout ended browser access")
         await viewer.close()
     print("paste e2e: ok")
     return 0

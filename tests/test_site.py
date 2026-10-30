@@ -314,3 +314,19 @@ def test_an_empty_baskets_no_slots_answer_is_marked_and_any_other_fail_is_a_form
         with pytest.raises(HktvError) as err:
             acct.delivery_slots("ZONE_TEST_1")
         assert err.value.code == "schema_changed"
+
+
+def test_a_re_minted_token_is_never_taken_as_proof_of_the_sign_in():
+    acct, site = account({PATHS["cart_page"]: [(200, "<html></html>")], PATHS["home"]: [(200, HOME_OUT)],
+                          PATHS["basket"]: [(200, OK_BASKET)]})  # fmt: skip
+    acct._drop_token()  # the token lapsed since the last check; a re-mint would work for a guest too
+    with pytest.raises(HktvError, match="session_expired"):
+        acct.basket()
+    assert PATHS["basket"] not in site.transport.calls and site.session.marks == ["dead"]
+
+
+def test_malformed_numbers_are_unknown_not_a_crash():
+    from hktvmall_mcp.site import cents
+    from hktvmall_mcp.views import _cents
+
+    assert cents("NaN") is None and cents("Infinity") is None and _cents("inf") is None

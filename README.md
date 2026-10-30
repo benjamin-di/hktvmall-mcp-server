@@ -1,6 +1,6 @@
 # hktvmall-mcp
 
-Read the [permissions model](docs/PERMISSIONS.md) and [remaining rollout work](docs/WORKPLAN.md).
+Read the [permissions model](docs/PERMISSIONS.md).
 
 An [MCP](https://modelcontextprotocol.io) server for [HKTVmall](https://www.hktvmall.com), Hong Kong's online mall
 and supermarket. It lets an AI assistant (Claude, ChatGPT, Cursor, ...) search HKTVmall for a whole shopping list,
@@ -62,10 +62,12 @@ latest code.
 | `hktv_get_cart()` | The basket as HKTVmall shows it: lines, delivery groups with fees and `amount_to_free_delivery`, totals (as HKTVmall's order summary computes them), `checkout_url`, and HKTVmall's checkout warnings in `notes`. |
 | `hktv_update_cart(changes[{id, quantity}], confirmed)` | Exact quantities (0 removes); each change's outcome (`applied`, `adjusted` with the reason such as `stock_limit`, or `rejected` with the reason such as `out_of_stock` or `store_closed`) is read back from HKTVmall. Raising a line above 15 or adding over HK$1,500 in one call changes nothing (`requires_buyer_review`) unless the person agreed (`confirmed`). |
 | `hktv_recent_orders(limit 1..50, offset, items)` | Your order history, newest first: number, date, status, total, deliveries and the items (id, title, quantity, line total). Pages back through the whole history with `offset`. Read-only: never the address, payment or vouchers. Re-ordering goes through `hktv_update_cart`, line by line. |
-| `hktv_status(check)` | Sign-in state, today's budget, any pause and the latest unresolved error. `check=true` runs a cached health check against HKTVmall (for monitoring). |
+| `hktv_status(check)` | Sign-in state, today's budget, any pause and the latest unresolved error; on a server that hosts several people, `connection` says whose HKTVmall account calls use (`owner`, `shared`). `check=true` runs a cached health check against HKTVmall (for monitoring). |
+| `hktv_connect()` | The person's My connections link (`url`), where they connect, reconnect or share HKTVmall; on a local server, `how` tells them the login command. Starts nothing. |
 
-Money is `{"cents": 12990, "display": "HK$129.90"}`. Errors are `{"error": {code, next_step, retryable}}`, and the
-`next_step` text tells the assistant what to do. A call that changed anything never returns an error: it reports each
+Money is `{"cents": 12990, "display": "HK$129.90"}`. Errors are `{"error": {code, next_step, retryable, action}}`:
+the `next_step` text tells the assistant what to do, and `action` is `retry_later`, `human_account_check`,
+`repair_local_infrastructure` or `none`. A call that changed anything never returns an error: it reports each
 change's outcome.
 
 ## Safety
@@ -81,8 +83,9 @@ Enforced in code and pinned by `tests/test_safety.py`:
   a quantity silently capped), so every change is read back and reported as HKTVmall then shows it.
 - **Gentle.** One request at a time, at most about three a second, a daily request budget, and a pause of 5 minutes
   (30 when it repeats) whenever HKTVmall pushes back.
-- **Your account only.** Each call acts for the account its connection belongs to, never one named in a tool
-  argument. Product names, descriptions and reviews are treated as data, not instructions.
+- **Your account only.** Each call acts for the caller's own HKTVmall connection, or the one a household member
+  chose to share with them, never one named in a tool argument. Product names, descriptions and reviews are treated
+  as data, not instructions.
 
 ## Privacy
 
@@ -96,6 +99,7 @@ container; `HKTVMALL_STATE_DIR` overrides it):
 | `browser/` | The sign-in window's browser profile, so HKTVmall recognises the browser next time. |
 | `state.json`, `shared.json` | Today's request budget, any pause, unresolved errors and health-check results. |
 | `orders.json` | The item lines of completed orders already read (id, title, quantity, line total), so the history loads quickly. |
+| `people/<person>/` | On a server that hosts several people: each person's connection record (owner, whom they share with, disconnect state), encrypted session (`session.bin`), budget and order cache. |
 
 Nothing is sent anywhere except HKTVmall. Logs (stderr) never contain cookies, search terms or HKTVmall's error text;
 a basket change HKTVmall did not apply as asked is logged with its product id and quantities, for diagnosis. The
@@ -141,59 +145,71 @@ server, sign in again the same way.
 
 ### Hosting several people
 
-An authenticating gateway admits MCP clients, supplies the server-only bearer and sets the exact header named by
-`HKTVMALL_TRUSTED_ACCOUNT_HEADER`. The private `HKTVMALL_CONNECTIONS_ACCOUNTS_FILE` maps aliases to existing IDs,
-for example `{"first":"default","second":"acct_0123456789ab"}`. Missing, duplicate or unknown identities never
-fall back to the default account. Keep the backend bearer private to the gateway. Accounts retain separate encrypted
-sessions, budgets and caches while sharing one IP address, pacing and total daily budget.
+Behind an authenticating gateway, the server hosts several people. The gateway admits MCP clients, supplies the
+server-only bearer and sets the header named by `HKTVMALL_TRUSTED_ACCOUNT_HEADER` to the caller's verified,
+administrator-owned person id (lowercase letters, digits, `_` and `-`). Keep the backend bearer private to the
+gateway; a request without it, or with a missing, repeated or malformed person, gets `not_connected` and never
+another person's account.
 
-Use and management are separate permissions. For shared accounts, `HKTVMALL_CONNECTIONS_MANAGERS_FILE` maps account
-IDs to designated management aliases, for example `{"default":"first","acct_0123456789ab":"second"}`. Without
-that file, management is derived only from unique account mappings; ambiguous shared ownership refuses browser setup.
-A shared user can use an authorized account without being allowed to replace its credentials.
+**People come from the identity provider.** Whoever the gateway admits (for example, members of an `mcp-hktvmall`
+group) has a record: the first call or Connections sign-in of a person creates `people/<person>/`. There is no
+per-server list to keep; removing someone from the group removes their access. A folder whose connection record is
+missing (a lost or replaced volume) refuses rather than starting over.
 
-Open `<HKTVMALL_PUBLIC_URL>/connections/` and authenticate through the configured OIDC provider. Register exactly
-`<HKTVMALL_PUBLIC_URL>/connections/callback`; require its signed group and administrator-controlled account-alias
-claim. The first explicit Connect, Resume or Disconnect pins the manager's issuer and immutable subject; status reads
-never claim ownership. Changing an alias cannot transfer a claimed account. Starting sign-in or resuming access
-requires verified fresh authentication within five minutes. Every page, mutation, viewer asset and WebSocket checks
-the owner. A link, MCP token or forwarded header cannot substitute. Missing OIDC settings refuse browser-enabled
-HTTP startup. Connecting grants no new agent permissions; browser Sign out ends only that browser session.
+**Connect your own account, or use one shared with you.** My connections is `<HKTVMALL_PUBLIC_URL>/connections/`, which
+`hktv_connect` returns. They authenticate through the configured OIDC provider and log in on HKTVmall's own page in a
+browser window the server shows them; nothing about the login is automated. The first HKTVmall account a person
+connects stays theirs: a reconnect must be the same account, and an HKTVmall account another person connected is
+refused, so nobody signs in to someone else's account.
 
-The human login service (`HKTVMALL_LOGIN_URL`, `HKTVMALL_LOGIN_TOKEN`) shows HKTVmall's own page through noVNC and
-automates no credential entry. Reconnect must match the previously verified provider email. A wrong/failed candidate
-preserves accepted credentials; IDs, encryption keys, budgets and caches remain intact. Page closure retains a
-resumable window, and completed saves continue without the page. `scripts/paste_e2e.py` verifies signed synthetic
-OIDC, owner isolation, actual Xvfb/x11vnc/noVNC and clipboard input, page-close recovery, successful adoption,
-disconnect and logout. It never contacts HKTVmall.
+**Sharing is the owner's choice.** A household often shops in one basket. The person who connected it can share it
+with others on My connections: their assistants then use the same basket and order history, without the password,
+and cannot reconnect, disconnect or share it. Nothing is shared until the owner says so, a person uses at most one
+account (their own, or the one shared with them), and calls never fall back to another account: when the owner's
+connection needs signing in again, members get `owner_reconnect` naming the owner. Unsharing, a member's **Stop
+using** and the owner's **Disconnect** apply from the next call. `hktv_status.connection` names the account in use.
 
-Disconnect persists a barrier before cancelling windows or deleting app-owned sealed credentials. It blocks new
-calls, cached clients, cookie refresh, keepalive and stale adoption across restart or removal of UI settings.
-Uncertain cleanup remains blocked until Retry disconnect succeeds. Reconnect advances the control epoch and session
-generation while retaining management/provider bindings. `hktvmall-mcp admin disconnect ID` uses this same path;
-`admin accounts` lists connected accounts. New invite signup is retired.
+To share a household account:
 
-The default account may consume a snapshot from its maintenance custodian. Its designated manager can Connect or
-Reconnect through the same authenticated page. Configure `HKTVMALL_DEFAULT_LOGIN_URL` to the private human backend
-in that same custodian container, running `python -m hktvmall_maintenance.human` alongside upkeep. The backend opens
-HKTVmall in a staged copy of the existing cold profile, independently verifies the fixed account, closes Chromium,
-and commits the profile and snapshot together. It returns only completion status to the reader. A wrong account,
-failed or cancelled attempt preserves the accepted profile, snapshot, holds and consumed attempts. Successful recovery
-acknowledges only the captured hold; it never refunds attempts. A pending commit blocks new reader/upkeep access until
-the custodian recovers the accepted pair before warming. Never run a second custodian against a live profile.
+1. Everyone opens **My connections** from `hktv_connect` and signs in with their own identity-provider login.
+   This makes them appear in the sharing list; recipients do not need to connect an HKTVmall account.
+2. The account owner connects HKTVmall, then returns to **My connections → Shared with** and presses **Share**
+   beside the recipient. Person IDs beside display names distinguish people with the same name.
+3. The recipient opens My connections to see **Using [owner]'s HKTVmall account**. Their assistant now uses that
+   basket and order history. The owner can **Stop sharing**; the recipient can **Stop using**.
 
-Reader and custodian share the private writable `HKTVMALL_CONNECTIONS_CONTROLS_DIR`. A configured directory must exist
-before startup. The reader's snapshot stays read-only; no profile, maintenance credential or mailbox access is given
-to it. Disconnect retains managed profile/snapshot data while stopping this server's access and publication. It does
-not unlink other devices or revoke agent access. Already-admitted calls may finish.
+Sharing controls belong to the owner and remain available during a reconnect. Before connecting, the page explains
+where sharing will appear. If someone is missing from the list, they must open My connections once or make an
+admitted MCP call. If they have their own connection already, it cannot be replaced with a shared one, even after
+Disconnect: the account binding is retained. Single-account/stdio servers have no sharing page; hosted sharing
+requires people mode and the browser routes below, supported since 0.14.
+
+Register exactly `<HKTVMALL_PUBLIC_URL>/connections/callback` with the OIDC provider; require its signed group and the
+administrator-controlled person claim. The first explicit Connect, Disconnect or Share pins the person's issuer and
+immutable subject; status reads never do. Connect and Share require a fresh authentication (within five minutes).
+Every page, form, viewer asset and WebSocket checks the person; forms carry the record's epoch, so a stale form
+changes nothing. A link, MCP token or forwarded header cannot substitute for the browser sign-in. Missing OIDC
+settings refuse browser-enabled HTTP startup. Connecting grants no new assistant permissions; browser Sign out ends
+only that browser session.
+
+The login service (`HKTVMALL_LOGIN_URL`, `HKTVMALL_LOGIN_TOKEN`) shows HKTVmall's own page through noVNC and
+automates no credential entry. A wrong or failed sign-in keeps the accepted session; closing the page keeps a
+resumable window, and a completed save continues without the page. `scripts/paste_e2e.py` verifies signed synthetic
+OIDC, owner isolation, the real Xvfb/x11vnc/noVNC viewer and clipboard input, page-close recovery, saving, sharing
+and stopping, disconnect and logout. It never contacts HKTVmall.
+
+Disconnect persists a barrier before cancelling windows or deleting the sealed session. It blocks new calls, cached
+clients, cookie refresh and keep-alive across restarts; the record, its sharing, budgets and caches stay. Reconnect
+advances the epoch and session generation. `hktvmall-mcp admin accounts` lists people (masked emails, state, sharing)
+and `hktvmall-mcp admin disconnect PERSON` uses the same disconnect path.
 
 Forward only GET `/connections/`, `/connections/status`, `/connections/login`, `/connections/callback`, POST
-`/connections/start`, `/connections/disconnect`, `/connections/logout`, and the existing `/connect/<id>` viewer
-shapes. Strip Authorization and forwarded identity headers on browser routes; preserve Cookie and Origin. Keep
-`/mcp` behind gateway admission. HTTP serving no longer starts the legacy local OAuth issuer. Inventory old connector
-consumers, bind existing account IDs and reconnect through the external identity provider. Old invites, device cookies
-and local tokens grant no browser authority. Preserve current owner/disconnect records on rollback; older releases
-that ignore controls or restore the old issuer are incompatible after activation.
+`/connections/start`, `/connections/disconnect`, `/connections/share`, `/connections/unshare`,
+`/connections/leave`, `/connections/logout`, and the `/connect/<id>` viewer shapes. Strip Authorization and
+forwarded identity headers on browser routes; preserve Cookie and Origin. Keep `/mcp` behind gateway admission.
+Releases before 0.14 read operator account and manager maps (`HKTVMALL_CONNECTIONS_ACCOUNTS_FILE`,
+`HKTVMALL_CONNECTIONS_MANAGERS_FILE`) and a default-account browser backend (`HKTVMALL_DEFAULT_LOGIN_URL`); these
+settings now refuse startup, and images before 0.14 are not rollback targets once people have records.
 
 Pasting works in the login window: Ctrl+V (Cmd+V on a Mac) types the clipboard's text into HKTVmall's page, so a
 password manager's copy can be used (a small add-on to noVNC's viewer from
@@ -229,23 +245,20 @@ not regular files and timestamps in the future are rejected. `session.json` uses
 
 | Variable | Default | |
 |---|---|---|
-| `MCP_BEARER_TOKEN` | required for `serve` | one or more tokens (comma-separated, at least 16 characters each), all for the default account |
+| `MCP_BEARER_TOKEN` | required for `serve` | one or more tokens (comma-separated, at least 16 characters each): the default account's, or the gateway's when hosting several people |
 | `HKTVMALL_STATE_DIR` | per-user folder (see [Privacy](#privacy)); `/state` in the image | sessions, budgets, pause, order cache |
 | `HKTVMALL_DAILY_BUDGET` | 2000 | the default account's HKTVmall requests per day (resets 00:00 Hong Kong time) |
 | `HKTVMALL_KEEPALIVE_SECONDS` | 21600 | how often an idle session is refreshed (re-mints its token and reads the basket) |
 | `HKTVMALL_SESSION_SNAPSHOT`, `HKTVMALL_EXPECTED_EMAIL` | unset | read the default account's session from a published file ([above](#session-snapshot-for-operators)) |
-| `HKTVMALL_SESSION_KEY` | unset | 32 random bytes, base64: enables connected accounts and encrypts their sessions |
-| `HKTVMALL_ACCOUNT_DAILY_BUDGET` | 500 | each connected account's requests per day |
+| `HKTVMALL_SESSION_KEY` | unset | 32 random bytes, base64: encrypts each person's session; required when hosting several people |
+| `HKTVMALL_ACCOUNT_DAILY_BUDGET` | 500 | each person's account's requests per day (shared by its members) |
 | `HKTVMALL_TOTAL_DAILY_BUDGET` | 4000 | all accounts together per day |
-| `HKTVMALL_DEFAULT_LOGIN_URL` | unset | Private kept human backend in the existing default-account custodian; required when hosting that account |
+| `HKTVMALL_TRUSTED_ACCOUNT_HEADER` | unset | Hosting several people: the exact gateway-set header with the verified person id, accepted only with the backend bearer |
 | `HKTVMALL_PUBLIC_URL` | unset | Fixed public HTTPS base for My connections and its callback |
 | `HKTVMALL_CONNECTIONS_ISSUER`, `HKTVMALL_CONNECTIONS_CLIENT_ID` | required with browser sign-in | Fixed OIDC issuer and registered client |
-| `HKTVMALL_CONNECTIONS_GROUP` | `mcp-hktvmall` | Required signed group for browser connection management |
-| `HKTVMALL_CONNECTIONS_ACCOUNT_CLAIM` | `person_id` | Administrator-controlled signed alias; never an email or request header |
-| `HKTVMALL_CONNECTIONS_ACCOUNTS_FILE` | unset | Private JSON alias → existing account ID map for use |
-| `HKTVMALL_CONNECTIONS_MANAGERS_FILE` | unset | Private JSON account ID → designated manager alias; required for shared accounts |
-| `HKTVMALL_TRUSTED_ACCOUNT_HEADER` | unset | Exact gateway-set alias header, accepted only with the backend bearer |
-| `HKTVMALL_CONNECTIONS_CONTROLS_DIR` | state directory `/connection-controls` | Shared private writable owner/disconnect records; mount the same directory into maintenance |
+| `HKTVMALL_CONNECTIONS_GROUP` | `mcp-hktvmall` | Required signed group for My connections |
+| `HKTVMALL_CONNECTIONS_ACCOUNT_CLAIM` | `person_id` | Administrator-controlled signed person id (the same value the gateway sends); never an email or display name |
+| `HKTVMALL_CONNECTIONS_CONTROLS_DIR` | state directory `/connection-controls` | The default account's owner/disconnect record, shared with its snapshot custodian (single-account servers only) |
 | `HKTVMALL_LOGIN_URL`, `HKTVMALL_LOGIN_TOKEN` | unset | the login browser service (`http://host:port` on a private network) and its bearer |
 | `LOG_LEVEL` | INFO | |
 
@@ -253,11 +266,13 @@ not regular files and timestamps in the future are rejected. `session.json` uses
 
 | Code | What to do |
 |---|---|
-| `not_signed_in` | Run `hktvmall-mcp login`. |
-| `connection_disconnected` | Server access was deliberately stopped; open My connections to reconnect. |
-| `session_expired` | HKTVmall ended the sign-in: run `hktvmall-mcp login` again (connected people reconnect; a snapshot needs a newer generation). |
+| `not_signed_in` | Nothing connected yet: open the `hktv_connect` link (on a local server, run `hktvmall-mcp login`), or ask a household member to share their connection. |
+| `connection_disconnected` | Server access was deliberately stopped; reconnect on My connections. |
+| `session_expired` | HKTVmall ended the sign-in: reconnect on My connections, or run `hktvmall-mcp login` again locally (a snapshot needs a newer generation). |
+| `owner_reconnect` | The connection is shared with you and its owner, named in the message, must reconnect it. |
+| `not_connected` | The gateway did not name a person this server accepts; the administrator decides who has access. |
 | `account_mismatch` | HKTVmall shows a different account than the saved one: sign in again. |
-| `session_source_missing` / `session_source_invalid` | The session snapshot is missing, unreadable, for another account or malformed: check its publisher, mount and `HKTVMALL_EXPECTED_EMAIL`. A malformed `session.json`: sign in again. |
+| `session_source_missing` / `session_source_invalid` | The session snapshot is missing, unreadable, for another account or malformed: check its publisher, mount and `HKTVMALL_EXPECTED_EMAIL`. A malformed `session.json`: sign in again. Hosting several people: a person's record under `state/people/` is unreadable (`hktvmall-mcp admin accounts` shows which); restore it from backup. |
 | `blocked` | HKTVmall pushed back; calls resume after the pause (`hktv_status.paused_until`). |
 | `budget_exhausted` | Today's budget is spent; it resets at 00:00 Hong Kong time. |
 | `upstream_error` | HKTVmall or the network failed; retry in a minute. From outside Hong Kong, every call fails this way. |
@@ -280,8 +295,5 @@ See [CONTRIBUTING.md](https://github.com/benjamin-di/hktvmall-mcp-server/blob/ma
 
 [MIT](https://github.com/benjamin-di/hktvmall-mcp-server/blob/main/LICENSE).
 
-Optional operator-owned account upkeep is documented in [Account maintenance](docs/MAINTENANCE.md).
-
-Owner connection forms carry a captured epoch and state. Missing/stale forms
-cannot replace or cancel a later attempt. Browser lifecycle actions use a private
-per-account lease; cleanup and adoption recheck their epoch before credential writes.
+Optional operator-owned account upkeep for a single-account server is documented in
+[Account maintenance](docs/MAINTENANCE.md).

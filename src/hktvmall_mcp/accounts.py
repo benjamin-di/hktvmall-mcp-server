@@ -1,15 +1,21 @@
-"""Several HKTVmall accounts in one server: the default account and, optionally, connected people.
+"""Accounts in one server: the default account (stdio and single-account HTTP) or, behind an authenticating
+gateway, one record per person.
 
 Each account is its own ``HktvService``: its own session, budget, unresolved errors, keep-alive and order
 cache, so nothing of one account can reach another's tool results. What all accounts share is the server's IP
 address: one request at a time, one pause when HKTVmall pushes back and a total daily budget (``Transport`` with
-the shared state). Which account a call acts for comes from the caller's token, never from a tool argument.
+the shared state). Which account a call acts for comes from the gateway's verified person, never from a tool
+argument.
 
-A connected person's session lives in ``HKTVMALL_STATE_DIR/accounts/<id>/session.bin``: the session file format
-(``snapshot.parse_snapshot`` validates it the same way), encrypted with AES-GCM under ``HKTVMALL_SESSION_KEY`` and
-bound to the account id. Nobody republishes it, so the cookies HKTVmall replaces during calls (a remember-me
-sign-in, a re-minted ``access_token``) are written back. A new login for the same email keeps the account id and
-raises the generation.
+People come from the identity provider: the first verified call or Connections sign-in of a person creates their
+record, ``HKTVMALL_STATE_DIR/people/<person>/``, holding their connection control (owner, sharing, disconnect
+barrier) beside their session, budget and caches, so the two can never be restored apart. A person's session
+(``session.bin``) is the session file format, encrypted with AES-GCM under ``HKTVMALL_SESSION_KEY`` and bound to
+the person. Nobody republishes it, so the cookies HKTVmall replaces during calls are written back.
+
+A connection belongs to the person who signed in; only they connect, disconnect or share it. A person uses their
+own connection or the one connection shared with them, never both, and never falls back to another account
+(docs/PERMISSIONS.md).
 """
 
 from __future__ import annotations
@@ -30,9 +36,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .auth import BEARER_CLIENT
-from .connections_state import ConnectionState
+from .connections_state import MAX_SHARES, ConnectionState
 from .errors import HktvError
-from .fsio import read_private
+from .fsio import locked, read_private
 from .session import OwnedSession
 from .snapshot import MAX_SNAPSHOT, SnapshotError
 from .state import StateStore
@@ -45,8 +51,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DEFAULT = "default"  # the default account: the server's own session (local login or an external snapshot)
-ACCOUNT_CLIENT = "account:"  # client_id prefix of a connected person's token
-ACCOUNT_ID = re.compile(r"acct_[0-9a-f]{12}\Z")
+PERSON = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")  # the identity provider's administrator-owned person_id
+CONTROL = "connection"  # people/<person>/connection.json
+MAX_PEOPLE = 100
 MAGIC = b"HKTVS1"
 NONCE = 12
 
@@ -83,10 +90,11 @@ def mask_email(email: str) -> str:
 
 
 class AccountSession(OwnedSession):
-    """A connected person's session: the same generation and verification rules as any session file, sealed with
-    AES-GCM under HKTVMALL_SESSION_KEY and bound to the account id."""
+    """A person's session: the same generation and verification rules as any session file, sealed with AES-GCM
+    under HKTVMALL_SESSION_KEY and bound to the person. No file yet is ``not_signed_in``."""
 
     seal_overhead = 64
+    missing_code = "not_signed_in"
 
     def __init__(
         self, directory: Path, account_id: str, email: str, key: bytes, clock=time.time, *, generation_floor=0
@@ -103,6 +111,9 @@ class AccountSession(OwnedSession):
 
     def _encode(self, raw: bytes) -> bytes:
         return seal(self._key, self.account_id, json.loads(raw))
+
+    def never_signed_in(self) -> bool:
+        return not self.snapshot_path.exists()
 
 
 class AccountTransport:
@@ -123,11 +134,11 @@ class AccountTransport:
 
 
 class Accounts:
-    """The default account plus every connected account found under ``accounts/``, built on first use."""
+    """The default account, plus one record per person when a gateway asserts people; services built on first use."""
 
     def __init__(self, settings: Settings, transport: Transport | None, default: HktvService, clock=time.time):
         self.settings, self.transport, self._clock = settings, transport, clock
-        self.directory = settings.state_dir / "accounts"
+        self.directory = settings.state_dir / "people"
         self._services: dict[str, HktvService] = {DEFAULT: default}
         self._lock = threading.Lock()
         default_control = self.control(DEFAULT)
@@ -135,60 +146,147 @@ class Accounts:
         default.session.read_guard = default_control.admission
         default.session.write_guard = default_control.active
 
-    def control(self, account_id):
-        if account_id != DEFAULT and not ACCOUNT_ID.fullmatch(account_id):
+    @property
+    def people(self) -> bool:
+        """People mode: the gateway asserts a verified person and each person has their own record."""
+        return self.settings.trusted_account_header is not None
+
+    def control(self, account: str) -> ConnectionState:
+        if account == DEFAULT:
+            return ConnectionState(
+                self.settings.controls_dir or self.settings.state_dir / "connection-controls", DEFAULT
+            )
+        if not isinstance(account, str) or not PERSON.fullmatch(account):
             raise HktvError("not_connected")
-        return ConnectionState(
-            self.settings.controls_dir or self.settings.state_dir / "connection-controls", account_id
+        return ConnectionState(self.directory / account, CONTROL, require_existing=True)
+
+    # -- people ------------------------------------------------------------------------------
+
+    def known(self) -> list[str]:
+        """Every person with a record (the roster), sorted."""
+        try:
+            entries = list(self.directory.iterdir())
+        except FileNotFoundError:
+            return []
+        return sorted(
+            p.name
+            for p in entries
+            if PERSON.fullmatch(p.name) and p.name != DEFAULT and (p / (CONTROL + ".json")).exists()
         )
 
-    def bindings(self):
-        if self.settings.accounts_file is None:
-            return {}
+    def person(self, person: Any, *, create: bool = True) -> ConnectionState:
+        """The verified person's control, creating their record on first contact. A folder without its control
+        (lost or replaced) refuses; it is never recreated around stored state."""
+        if not self.people or self.settings.session_key is None or person == DEFAULT:
+            raise HktvError("not_connected")  # "default" is the single-account mode's own, never a person
+        control = self.control(person)
+        folder = self.directory / person
+        if (folder / (CONTROL + ".json")).exists() or not create:
+            return control
+        with self._people_lock():
+            if folder.exists() or folder.is_symlink():
+                return control  # created meanwhile, or stored state without its control: read() decides
+            if len(self.known()) >= MAX_PEOPLE:
+                raise HktvError("not_connected", log_detail="person limit reached")
+            staging = self.directory / f".new-{person}-{secrets.token_hex(4)}"  # never a person name
+            staging.mkdir(mode=0o700)
+            try:
+                ConnectionState(staging, CONTROL, require_existing=False).initialize()
+                staging.rename(folder)  # a record appears whole or not at all
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+            log.info("person %s recorded", _tag(person))
+        return control
+
+    def _people_lock(self):
+        """Serialises record creation and every decision that spans several people (connect, share)."""
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return locked(self.directory / ".people.lock")
+
+    def owns(self, person: str) -> bool:
+        """Whether the person has a connection of their own: bound to a provider account or holding a session,
+        also while disconnected (a disconnected connection never falls back to a shared one)."""
+        if (self.directory / person / "session.bin").exists():
+            return True
+        return self.control(person).read()["provider_email"] is not None
+
+    def sharer(self, person: str) -> str | None:
+        """The one person who shares their connection with ``person``, if any. An unreadable record might be the
+        one that shares with them, so it refuses rather than letting them fall back to their own account."""
+        found = []
+        for owner in self._folders():
+            if owner == person:
+                continue
+            try:
+                shared = self.control(owner).read().get("shared_with", [])
+            except HktvError:
+                raise HktvError("session_source_missing", log_detail="unreadable record") from None
+            if person in shared:
+                found.append(owner)
+        if len(found) > 1:
+            raise HktvError("not_connected", log_detail="shared by several people")
+        return found[0] if found else None
+
+    def _folders(self) -> list[str]:
+        """Every person folder, including one whose control record is missing."""
         try:
-            data = json.loads(read_private(self.settings.accounts_file, 65536))
-        except (OSError, ValueError):
-            raise HktvError("not_connected") from None
-        if (
-            not isinstance(data, dict)
-            or not data
-            or len(data) > 100
-            or any(
-                not isinstance(person, str)
-                or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", person)
-                or not isinstance(account, str)
-                or (account != DEFAULT and not ACCOUNT_ID.fullmatch(account))
-                for person, account in data.items()
-            )
-        ):
-            raise HktvError("not_connected")
-        return data
+            entries = list(self.directory.iterdir())
+        except FileNotFoundError:
+            return []
+        return sorted(p.name for p in entries if PERSON.fullmatch(p.name) and p.name != DEFAULT and p.is_dir())
 
-    def managers(self):
-        access = self.bindings()
-        if self.settings.managers_file is None:
-            if len(set(access.values())) != len(access):
-                raise HktvError("not_connected", log_detail="shared accounts require explicit management owners")
-            return {account: person for person, account in access.items()}
+    def name(self, person: str) -> str:
+        """A person's display name (identity provider ``name`` at their latest Connections sign-in), for display."""
         try:
-            data = json.loads(read_private(self.settings.managers_file, 65536))
-        except (OSError, ValueError):
-            raise HktvError("not_connected") from None
-        if (
-            not isinstance(data, dict)
-            or set(data) != set(access.values())
-            or any(not isinstance(person, str) or access.get(person) != account for account, person in data.items())
-        ):
-            raise HktvError("not_connected")
-        return data
+            name = self.control(person).read().get("name")
+        except HktvError:
+            name = None
+        return name or person
 
-    def account_for(self, person):
-        account = self.bindings().get(person) if isinstance(person, str) else None
-        if account is None:
-            raise HktvError("not_connected")
-        return account
+    def note_name(self, person: str, name: Any) -> None:
+        clean = display_name(name)
+        if clean is None:
+            return
+        control = self.control(person)
+        if control.read().get("name") == clean:
+            return
+        with control.edit() as data:
+            data["name"] = clean
 
-    def forget(self, account):
+    def account_for(self, person: Any) -> str:
+        """The account a verified person's calls use: their own, else the one shared with them."""
+        self.person(person)
+        if self.owns(person):
+            return person
+        return self.sharer(person) or person
+
+    def share(self, owner: str, member: str, epoch: str, state: str) -> None:
+        with self._people_lock():  # no connect or other share can change ownership between check and write
+            if member == owner or member not in self.known():
+                raise HktvError("not_connected")
+            if not self.owns(owner) or self.owns(member):
+                raise HktvError("not_connected")
+            if self.sharer(member) not in (None, owner):
+                raise HktvError("not_connected")
+            with self.control(owner).edit() as data:
+                ConnectionState.expected(data, epoch, state)
+                shared = list(data.get("shared_with", []))
+                if member not in shared:
+                    if len(shared) >= MAX_SHARES:
+                        raise HktvError("not_connected")
+                    data["shared_with"] = sorted([*shared, member])
+        log.info("person %s shared their connection with %s", _tag(owner), _tag(member))
+
+    def unshare(self, owner: str, member: str, epoch: str | None = None, state: str | None = None) -> None:
+        with self.control(owner).edit() as data:
+            ConnectionState.expected(data, epoch, state)
+            if member not in data.get("shared_with", []):
+                raise HktvError("not_connected")
+            data["shared_with"] = [p for p in data["shared_with"] if p != member]
+        log.info("person %s stopped sharing with %s", _tag(owner), _tag(member))
+
+    def forget(self, account: str) -> None:
         if account != DEFAULT:
             with self._lock:
                 self._services.pop(account, None)
@@ -206,172 +304,176 @@ class Accounts:
                 return self.get(DEFAULT)
             raise HktvError("not_connected", log_detail="no token")
         if client_id == BEARER_CLIENT:
-            return self.get(self.account_for(person) if self.settings.trusted_account_header else DEFAULT)
-        if client_id.startswith(ACCOUNT_CLIENT):
-            return self.get(client_id[len(ACCOUNT_CLIENT) :])
+            return self.get(self.account_for(person)) if self.people else self.get(DEFAULT)
         raise HktvError("not_connected", log_detail="unknown client")
 
-    def get(self, account_id: str) -> HktvService:
-        self.control(account_id).require_active()
+    def get(self, account: str) -> HktvService:
+        self.control(account).require_active()
         with self._lock:
-            service = self._services.get(account_id)
+            service = self._services.get(account)
             if service is not None:
-                if account_id == DEFAULT or (self.directory / account_id / "session.bin").exists():
-                    return service
-                del self._services[account_id]  # disconnected meanwhile (admin disconnect)
-                raise HktvError("not_connected", log_detail="account disconnected")
-            if not ACCOUNT_ID.fullmatch(account_id) or self.settings.session_key is None:
+                return service
+            if account == DEFAULT or self.settings.session_key is None:
                 raise HktvError("not_connected", log_detail="no such account")
-            email = self._email(account_id)
-            if email is None:
-                raise HktvError("not_connected", log_detail="no such account")
-            service = self._build(account_id, email)
-            self._services[account_id] = service
+            service = self._build(account)
+            self._services[account] = service
             return service
 
     def services(self) -> list[HktvService]:
-        """Every account, for the keep-alive loop; accounts whose files went away are dropped."""
-        ids = self.ids()
-        with self._lock:
-            for gone in [i for i in self._services if i != DEFAULT and i not in ids]:
-                del self._services[gone]
-        out = [self.default] if self.control(DEFAULT).read()["state"] == "active" else []
-        for account_id in ids:
+        """Every active signed-in account, for the keep-alive loop."""
+        out = []
+        try:
+            if self.control(DEFAULT).read()["state"] == "active" and not self.people:
+                out.append(self.default)
+        except HktvError:
+            pass
+        for person in self.known() if self.people else []:
+            if not (self.directory / person / "session.bin").exists():
+                continue
             try:
-                out.append(self.get(account_id))
+                out.append(self.get(person))
             except HktvError:
                 continue
         return out
 
-    def ids(self) -> list[str]:
-        if self.settings.session_key is None:
-            return []
-        try:
-            entries = list(self.directory.iterdir())
-        except FileNotFoundError:
-            return []
-        return sorted(p.name for p in entries if ACCOUNT_ID.fullmatch(p.name) and (p / "session.bin").exists())
-
-    def email(self, account_id: str) -> str | None:
-        """A connected account's HKTVmall email (for the connect page's own checks; never shown unmasked)."""
-        if not ACCOUNT_ID.fullmatch(account_id) or self.settings.session_key is None:
-            return None
-        return self._email(account_id)
-
-    def _email(self, account_id: str) -> str | None:
-        """The account's email, from its sealed session (read loosely; the session parse checks the rest)."""
+    def _email(self, person: str) -> str | None:
+        """The person's provider email, from their sealed session (read loosely; the session parse checks the
+        rest), else the email their control bound."""
         assert self.settings.session_key is not None
         try:
-            blob = read_private(
-                self.directory / account_id / "session.bin", MAX_SNAPSHOT + AccountSession.seal_overhead
-            )
-            data = json.loads(unseal(self.settings.session_key, account_id, blob))
+            blob = read_private(self.directory / person / "session.bin", MAX_SNAPSHOT + AccountSession.seal_overhead)
+            data = json.loads(unseal(self.settings.session_key, person, blob))
+            email = data.get("email") if isinstance(data, dict) else None
+        except FileNotFoundError:
+            email = None
         except (OSError, ValueError, SnapshotError):
-            return None
-        email = data.get("email") if isinstance(data, dict) else None
-        return email.casefold() if isinstance(email, str) and "@" in email else None
+            raise HktvError("not_connected", log_detail="unreadable session") from None
+        if isinstance(email, str) and "@" in email:
+            return email.casefold()
+        return self.control(person).read()["provider_email"]
 
-    def _build(self, account_id: str, email: str) -> HktvService:
+    def email(self, person: str) -> str | None:
+        try:
+            return self._email(person)
+        except HktvError:
+            return None
+
+    def _build(self, person: str) -> HktvService:
         from .server import HktvService
         from .site import Site
 
         assert self.settings.session_key is not None and self.transport is not None
-        directory = self.directory / account_id
+        directory = self.directory / person
         state = StateStore(directory, budget=self.settings.account_daily_budget, clock=self._clock)
-        session = AccountSession(directory, account_id, email, self.settings.session_key, clock=self._clock)
-        control = self.control(account_id)
+        email = self._email(person) or ""
+        session = AccountSession(directory, person, email, self.settings.session_key, clock=self._clock)
+        control = self.control(person)
         epoch = control.require_active()
         session.access_check = lambda: control.require_active(epoch)
         session.read_guard = lambda: control.admission(epoch)
         session.write_guard = lambda: control.active(epoch)
         site = Site(AccountTransport(self.transport, state), session)  # type: ignore[arg-type]
-        return HktvService(site, state, session, self.settings, shared=self.transport.state, account_id=account_id)
+        return HktvService(site, state, session, self.settings, shared=self.transport.state, account_id=person)
 
-    # -- connecting and removing ------------------------------------------------------------
+    # -- connecting and disconnecting ----------------------------------------------------------
 
-    def adopt(self, email: str, cookies: list[dict[str, Any]], user_agent: str) -> str:
-        """Store a session from a login the person did themselves; the same email keeps its account id.
-        The result is validated exactly like any session file before it is written."""
-        if self.settings.session_key is None:
-            raise HktvError("not_connected", log_detail="HKTVMALL_SESSION_KEY unset")
-        email = email.strip().casefold()
-        account_id = next((i for i in self.ids() if self._email(i) == email), None) or f"acct_{secrets.token_hex(6)}"
-        directory = self.directory / account_id
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        session = AccountSession(directory, account_id, email, self.settings.session_key, clock=self._clock)
-        try:
-            generation = session.write(email, user_agent, cookies)
-        except SnapshotError:
-            raise HktvError("invalid_argument", "the login did not produce a usable HKTVmall session") from None
-        log.info("account %s connected (generation %d)", account_id, generation)
-        return account_id
-
-    def remove(self, account_id: str) -> bool:
-        if not ACCOUNT_ID.fullmatch(account_id):
-            return False
-        with self._lock:
-            self._services.pop(account_id, None)
-        directory = self.directory / account_id
-        if not directory.exists():
-            return False
-        shutil.rmtree(directory)
-        log.info("account %s removed", account_id)
-        return True
-
-    def adopt_owned(self, account_id, epoch, email, cookies, user_agent):
-        if account_id == DEFAULT:
+    def adopt_owned(self, person, epoch, email, cookies, user_agent):
+        """Store the session from a sign-in the person did themselves. The first provider account a person connects
+        is theirs; another person's provider account is refused, so nobody signs in to someone else's account."""
+        if person == DEFAULT or self.settings.session_key is None:
             raise HktvError("not_connected")
         email = email.strip().casefold()
-        control = self.control(account_id)
-        with control.active(epoch) as data:
-            expected = data["provider_email"] or self._email(account_id)
+        control = self.control(person)
+        with self._people_lock(), control.active(epoch) as data:
+            expected = data["provider_email"] or self.email(person)
             if expected and expected != email:
                 raise HktvError("account_mismatch")
-            if any(other != account_id and self._email(other) == email for other in self.ids()):
-                raise HktvError("account_mismatch")
-            directory = self.directory / account_id
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not expected:  # binding a provider account for the first time: it must be nobody else's
+                if self.sharer(person) is not None:
+                    raise HktvError("not_connected")  # a member stops using the shared connection first
+                for other in self._folders():
+                    if other != person and self._bound(other) in (email, None):
+                        raise HktvError("account_mismatch")  # theirs, or unreadable and possibly theirs
+            directory = self.directory / person
             session = AccountSession(
                 directory,
-                account_id,
+                person,
                 email,
                 self.settings.session_key,
                 clock=self._clock,
                 generation_floor=data["generation"],
             )
-            generation = session.write(email, user_agent, cookies)
+            try:
+                generation = session.write(email, user_agent, cookies)
+            except SnapshotError:
+                raise HktvError("invalid_argument", "the login did not produce a usable HKTVmall session") from None
             data.update(provider_email=email, generation=generation)
-        self.forget(account_id)
-        return account_id
+        self.forget(person)
+        log.info("person %s connected (generation %d)", _tag(person), generation)
+        return person
 
-    def disconnect_owned(self, account_id, epoch):
-        control = self.control(account_id)
+    def _bound(self, person: str) -> str | None:
+        """The provider account a person's connection is bound to; "" when none; None when unreadable."""
+        try:
+            return self.control(person).read()["provider_email"] or self._email(person) or ""
+        except HktvError:
+            return None
+
+    def disconnect_owned(self, person, epoch):
+        control = self.control(person)
         with control.edit() as data:
             if data["state"] != "disconnecting" or data["epoch"] != epoch:
                 raise HktvError("connection_disconnected")
-            self.forget(account_id)
-            if account_id != DEFAULT:
-                data["provider_email"] = data["provider_email"] or self._email(account_id)
-                blob = self.directory / account_id / "session.bin"
+            self.forget(person)
+            if person != DEFAULT:
+                data["provider_email"] = data["provider_email"] or self.email(person)
+                blob = self.directory / person / "session.bin"
                 if blob.exists() and self.settings.session_key:
-                    snapshot = json.loads(
-                        unseal(self.settings.session_key, account_id, read_private(blob, MAX_SNAPSHOT + 64))
-                    )
-                    data["generation"] = max(data["generation"], int(snapshot.get("generation", 0)))
+                    try:
+                        snapshot = json.loads(
+                            unseal(self.settings.session_key, person, read_private(blob, MAX_SNAPSHOT + 64))
+                        )
+                        data["generation"] = max(data["generation"], int(snapshot.get("generation", 0)))
+                    except (OSError, ValueError, TypeError, AttributeError, SnapshotError):
+                        # an unreadable session (a rotated key, damage) is still deleted; past any watermark
+                        log.warning("person %s: unreadable session removed on disconnect", _tag(person))
+                        data["generation"] += 1
                 blob.unlink(missing_ok=True)
             data["state"] = "disconnected"
 
     def describe(self) -> list[dict[str, Any]]:
-        """For the operator: ids, masked emails and sign-in state; never cookies."""
+        """For the operator: people, masked emails, sign-in state and sharing; never cookies."""
         out = []
-        for service in self.services()[1:]:
-            status = service.session.status()
+        for person in self.known():
+            try:
+                control = self.control(person).read()
+            except HktvError:
+                out.append({"person": person, "state": "unreadable"})
+                continue
+            email = self.email(person)
             out.append(
                 {
-                    "id": service.account_id,
-                    "email": mask_email(service.session.expected_email),
-                    "generation": status["generation"],
-                    "state": status["state"],
+                    "person": person,
+                    "name": control.get("name"),
+                    "email": mask_email(email) if email else None,
+                    "state": control["state"],
+                    "signed_in": (self.directory / person / "session.bin").exists(),
+                    "shared_with": control.get("shared_with", []),
                 }
             )
         return out
+
+
+def display_name(value: Any) -> str | None:
+    """A display name safe to show and to quote to a model: letters, digits, spaces and . ' - only, at most 40."""
+    if not isinstance(value, str):
+        return None
+    clean = " ".join(re.sub(r"[^\w .'-]", "", value, flags=re.UNICODE).split())[:40].strip()
+    return clean or None
+
+
+def _tag(person: str) -> str:
+    """A person in logs: a short stable hash, never the identifier itself."""
+    import hashlib
+
+    return hashlib.sha256(person.encode()).hexdigest()[:10]

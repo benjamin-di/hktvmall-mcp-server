@@ -42,11 +42,11 @@ accounting, durable holds, account checks and snapshot compatibility. Generic
 mechanics belong in signin-window; runtime credentials and planner identities
 belong in deployment configuration. See [Account maintenance](docs/MAINTENANCE.md).
 
-Hosted browser connection management requires OIDC through signin-window's public integration; MCP admission stays
-with the authenticating gateway. Keep use mappings separate from designated managers and pin issuer/subject only on
-explicit management actions. Durable controls fence reader/cache access, adoption, cookie updates and maintenance
-publication independently of browser sessions/configuration. Preserve account IDs, provider bindings, generation
-watermarks, budgets and caches. The managed default profile remains independently owned; Disconnect/Resume must
-enforce server access without deleting or transferring it. Never restore the retired local issuer or older controls.
-Run the native `scripts/paste_e2e.py` against a synthetic site as well as the normal gate. Hosted OIDC storage is POSIX;
-retain existing reader/stdio portability.
+Hosting several people: people come from the identity provider (a record on first contact, never a server-side
+list) and MCP admission stays with the authenticating gateway. A connection belongs to whoever signed in; only they
+connect, disconnect or share it, sharing starts empty, a person uses one account and calls never fall back to another
+(docs/PERMISSIONS.md). Durable controls fence reader/cache access, adoption, cookie updates and sharing independently
+of browser sessions/configuration; preserve records, provider bindings, generation watermarks, budgets and caches.
+Never restore operator account maps, the retired local issuer or older controls. Run the native
+`scripts/paste_e2e.py` against a synthetic site as well as the normal gate. Hosted OIDC storage is POSIX; retain
+existing reader/stdio portability.

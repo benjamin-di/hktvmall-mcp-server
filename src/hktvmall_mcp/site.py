@@ -108,7 +108,7 @@ def cents(value: Any) -> int | None:
         return None
     try:
         return int((Decimal(str(value)) * 100).to_integral_value())
-    except ArithmeticError:
+    except (ArithmeticError, ValueError):  # ValueError: NaN
         return None
 
 
@@ -255,7 +255,7 @@ class Site:
             return [
                 {"total": r.get("totalValue", 0), "hits": [h["source"] for h in r.get("hits", [])]} for r in results
             ]
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             if status == 403:
                 self.transport.state.pause("search 403")
                 raise HktvError("blocked", log_detail="search 403") from None
@@ -346,7 +346,7 @@ class Account:
     def __init__(self, site: Site, jar: http.cookiejar.CookieJar, generation: int = 0, *, user_agent: str = UA) -> None:
         self.site, self.jar, self.generation = site, jar, generation
         self.opener = opener_for(jar)
-        self.csrf = ""
+        self.csrf = ""  # set by verify(): this client has proven the sign-in
         self.user_agent = user_agent
         self.dead = False
 
@@ -423,6 +423,8 @@ class Account:
         a retry that succeeded is never taken as proof that this is still the account's basket."""
         if not self._token():
             self.remint()
+            if not self.csrf:
+                self.verify()  # a re-mint works for a guest too: prove the sign-in once per client
         body = json.dumps(payload).encode() if payload is not None else None
         status, data = self._send_json(method, key, body, query)
         if status == 401:
