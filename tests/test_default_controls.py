@@ -2,6 +2,7 @@
 
 import asyncio
 import dataclasses
+import sys
 import time
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -32,6 +33,7 @@ def health(accounts):
     return asyncio.run(go()).get("connection_health")
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="optional maintenance requires Linux")
 def test_native_positive_signed_out_survives_reader_restart_and_new_generation_supersedes_it(configured, tmp_path):
     from signin_window.sessions import AttemptBudget
 
@@ -113,6 +115,7 @@ def test_signed_out_hint_cannot_be_lost_between_hint_and_control_atomic_renames(
 
 
 @pytest.mark.parametrize("resume_during_warm", [False, True])
+@pytest.mark.skipif(sys.platform != "linux", reason="optional maintenance requires Linux")
 def test_maintenance_cannot_publish_after_disconnect_or_disconnect_resume(configured, tmp_path, resume_during_warm):
     from signin_window.sessions import AttemptBudget
 
