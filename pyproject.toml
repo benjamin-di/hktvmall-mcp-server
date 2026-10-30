@@ -1,6 +1,6 @@
 [project]
 name = "hktvmall-mcp"
-version = "0.14.5"
+version = "0.14.6"
 description = "MCP server for HKTVmall (Hong Kong): search, product cards, order history and basket edits read back from HKTVmall; never pays"
 readme = "README.md"
 license = "MIT"

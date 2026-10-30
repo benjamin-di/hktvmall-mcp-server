@@ -151,7 +151,7 @@ jobs:
             command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
             ls /ms-patchright | grep -q chromium
             [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]
-            python -c "from hktvmall_mcp import connect; assert b\"./app/ui.js\" in connect.PASTE_JS"
+            python -c "from signin_window.relay import PASTE_JS; assert b\"./app/ui.js\" in PASTE_JS"
             ls /usr/share/fonts/opentype/noto/ | grep -q CJK'
           rc=0
           timeout 60 docker run --rm --network none "$image" || rc=$?
