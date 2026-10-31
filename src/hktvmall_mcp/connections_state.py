@@ -16,8 +16,45 @@ from .fsio import atomic_write_bytes, atomic_write_json, locked, read_private
 
 BASE_FIELDS = {"version", "epoch", "state", "owner", "provider_email", "generation"}
 OPTIONAL_FIELDS = {"shared_with", "name"}  # a person's record only: who they share with, their display name
+PEOPLE_FIELDS = {"selection", "selection_revision", "shares", "shared_with"}
 MAX_SHARES = 20
 _PERSON = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
+_REVISION = re.compile(r"[A-Za-z0-9_-]{32}\Z")
+
+
+def revision():
+    return secrets.token_urlsafe(24)
+
+
+def valid_selection(value):
+    return value is None or (
+        isinstance(value, dict)
+        and set(value) == {"account", "grant"}
+        and isinstance(value["account"], str)
+        and value["account"] != "default"
+        and _PERSON.fullmatch(value["account"])
+        and (value["grant"] is None or isinstance(value["grant"], str) and _REVISION.fullmatch(value["grant"]))
+    )
+
+
+def valid_people(data):
+    shares = data.get("shares")
+    return (
+        set(data) >= PEOPLE_FIELDS
+        and valid_selection(data["selection"])
+        and isinstance(data["selection_revision"], str)
+        and _REVISION.fullmatch(data["selection_revision"])
+        and isinstance(shares, dict)
+        and set(shares) == set(data["shared_with"])
+        and all(
+            isinstance(grant, dict)
+            and set(grant) == {"revision", "order_history"}
+            and isinstance(grant["revision"], str)
+            and _REVISION.fullmatch(grant["revision"])
+            and type(grant["order_history"]) is bool
+            for grant in shares.values()
+        )
+    )
 
 
 class ConnectionState:
@@ -39,7 +76,7 @@ class ConnectionState:
 
     def read(self):
         try:
-            data = json.loads(read_private(self.path, 4096))
+            data = json.loads(read_private(self.path, 16384))
         except FileNotFoundError:
             if self.marker.exists() or self.marker.is_symlink() or self.required:
                 raise HktvError("connection_disconnected") from None
@@ -55,9 +92,10 @@ class ConnectionState:
             raise HktvError("connection_disconnected") from None
         if (
             not isinstance(data, dict)
-            or not BASE_FIELDS <= set(data) <= BASE_FIELDS | OPTIONAL_FIELDS
+            or not BASE_FIELDS <= set(data) <= BASE_FIELDS | OPTIONAL_FIELDS | PEOPLE_FIELDS
             or type(data["version"]) is not int
-            or data["version"] != 1
+            or data["version"] not in (1, 2)
+            or (data["version"] == 1 and not set(data) <= BASE_FIELDS | OPTIONAL_FIELDS)
             or not isinstance(data["epoch"], str)
             or not re.fullmatch(r"initial|[A-Za-z0-9_-]{32}", data["epoch"])
             or data["state"] not in ("active", "disconnecting", "disconnected")
@@ -70,7 +108,9 @@ class ConnectionState:
                     not isinstance(data["shared_with"], list)
                     or len(data["shared_with"]) > MAX_SHARES
                     or len(set(map(str, data["shared_with"]))) != len(data["shared_with"])
-                    or not all(isinstance(p, str) and _PERSON.fullmatch(p) for p in data["shared_with"])
+                    or not all(
+                        isinstance(p, str) and p != "default" and _PERSON.fullmatch(p) for p in data["shared_with"]
+                    )
                 )
             )
             or (
@@ -79,6 +119,8 @@ class ConnectionState:
                 and (not isinstance(data["name"], str) or len(data["name"]) > 40)
             )
         ):
+            raise HktvError("connection_disconnected")
+        if data["version"] == 2 and not valid_people(data):
             raise HktvError("connection_disconnected")
         owner = data["owner"]
         if owner is not None and (

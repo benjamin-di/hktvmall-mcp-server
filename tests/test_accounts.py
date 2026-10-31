@@ -75,6 +75,17 @@ def control_of(accounts, person):
     return current["epoch"], current["state"]
 
 
+def choose(accounts, person, owner):
+    current = accounts.control(person).read()
+    grant = None if person == owner else accounts.control(owner).read()["shares"][person]["revision"]
+    accounts.select(person, owner, current["selection_revision"], grant)
+
+
+def revoke(accounts, owner, member):
+    grant = accounts.control(owner).read()["shares"][member]["revision"]
+    accounts.unshare(owner, member, *control_of(accounts, owner), grant=grant)
+
+
 def test_a_person_gets_a_record_on_first_contact_and_never_by_name_alone(accounts, keyed):
     assert accounts.known() == []
     service = accounts.resolve(BEARER_CLIENT, person="alex")
@@ -139,17 +150,18 @@ def test_nobody_can_connect_someone_elses_provider_account(accounts):
     assert err.value.code == "account_mismatch"
 
 
-def test_a_member_connects_their_own_only_after_stopping_and_unreadable_records_block_new_bindings(accounts, keyed):
+def test_a_member_can_connect_their_own_without_changing_selection_and_lost_records_block_new_bindings(accounts, keyed):
     connect(accounts, "alex")
     accounts.person("sam")
     accounts.share("alex", "sam", *control_of(accounts, "alex"))
-    with pytest.raises(HktvError) as err:
-        connect(accounts, "sam", SAM, "sam-session")  # a window opened before Alex shared
-    assert err.value.code == "not_connected" and not accounts.owns("sam")
-    accounts.unshare("alex", "sam", *control_of(accounts, "alex"))
-    (keyed.state_dir / "people" / "kim").mkdir(mode=0o700)  # a record whose control was lost
+    choose(accounts, "sam", "alex")
+    connect(accounts, "sam", SAM, "sam-session")
+    assert accounts.owns("sam") and accounts.account_for("sam") == "alex"
+    accounts.person("kim")
+    (keyed.state_dir / "people" / "missing").mkdir(mode=0o700)
+    epoch = accounts.control("kim").require_active()
     with pytest.raises(HktvError):
-        connect(accounts, "sam", SAM, "sam-session")  # Kim's lost record might be bound to this account
+        accounts.adopt_owned("kim", epoch, "kim@example.com", cookies("kim-session"), "Synthetic Browser")
     connect(accounts, "alex", ALEX, "alex-reconnect")  # an existing binding is unaffected
 
 
@@ -215,40 +227,47 @@ def test_a_person_without_a_connection_is_monitored_as_a_guest(accounts, monkeyp
     assert searched and service.status(False)["signed_in"] is False
 
 
-def test_sharing_is_the_owners_choice_and_ends_on_the_next_call(accounts):
+def test_sharing_is_an_offer_and_revocation_never_falls_back(accounts):
     connect(accounts, "alex")
     accounts.person("sam")
-    assert accounts.resolve(BEARER_CLIENT, person="sam").account_id == "sam"  # nothing shared by default
+    assert accounts.resolve(BEARER_CLIENT, person="sam").account_id == "sam"
     accounts.share("alex", "sam", *control_of(accounts, "alex"))
     assert accounts.control("alex").read()["shared_with"] == ["sam"]
+    assert accounts.resolve(BEARER_CLIENT, person="sam").account_id == "sam"
+    choose(accounts, "sam", "alex")
     assert accounts.resolve(BEARER_CLIENT, person="sam").account_id == "alex"
     assert accounts.resolve(BEARER_CLIENT, person="alex").account_id == "alex"
-    accounts.unshare("alex", "sam", *control_of(accounts, "alex"))
-    assert accounts.resolve(BEARER_CLIENT, person="sam").account_id == "sam"
+    revoke(accounts, "alex", "sam")
+    with pytest.raises(HktvError, match="shared_access_removed"):
+        accounts.resolve(BEARER_CLIENT, person="sam")
 
 
-def test_sharing_refuses_strangers_owners_and_second_households(accounts):
+def test_sharing_refuses_strangers_but_owners_can_receive_several_offers(accounts):
     connect(accounts, "alex")
     connect(accounts, "sam", SAM, "sam-session")
     accounts.person("kim")
-    for member in ("alex", "nobody", "sam"):  # self, not on the roster, has their own connection
+    for member in ("alex", "nobody"):
         with pytest.raises(HktvError):
             accounts.share("alex", member, *control_of(accounts, "alex"))
     accounts.person("lee")
     with pytest.raises(HktvError):
-        accounts.share("lee", "kim", *control_of(accounts, "lee"))  # nothing of their own to share
+        accounts.share("lee", "kim", *control_of(accounts, "lee"))
+    accounts.share("alex", "sam", *control_of(accounts, "alex"))
+    assert accounts.account_for("sam") == "sam"
     accounts.share("alex", "kim", *control_of(accounts, "alex"))
-    with pytest.raises(HktvError):
-        accounts.share("sam", "kim", *control_of(accounts, "sam"))  # Kim already uses Alex's
+    accounts.share("sam", "kim", *control_of(accounts, "sam"))
+    offers, unavailable = accounts.offers("kim")
+    assert not unavailable and [offer["owner"] for offer in offers] == ["alex", "sam"]
+    assert accounts.account_for("kim") == "kim"
     with pytest.raises(HktvError):
         accounts.share("alex", "kim", "stale-epoch", "active")
-    assert accounts.control("sam").read().get("shared_with", []) == []
 
 
 def test_a_member_never_falls_back_when_the_owner_disconnects(accounts):
     connect(accounts, "alex")
     accounts.person("sam")
     accounts.share("alex", "sam", *control_of(accounts, "alex"))
+    choose(accounts, "sam", "alex")
     epoch = accounts.control("alex").suspend()
     accounts.disconnect_owned("alex", epoch)
     with pytest.raises(HktvError) as err:
@@ -380,11 +399,13 @@ def test_owner_and_member_see_the_same_basket_and_strangers_see_their_own(accoun
         assert call("alex", "hktv_status")["connection"] == {"owner": "alex", "shared": False}
         assert call("sam", "hktv_get_cart")["error"]["code"] == "not_signed_in"
         accounts.share("alex", "sam", *control_of(accounts, "alex"))
+        choose(accounts, "sam", "alex")
         assert [line["id"] for line in call("sam", "hktv_get_cart")["line_items"]] == ["ALEX-ITEM"]
         assert call("sam", "hktv_status")["connection"]["shared"] is True
-        accounts.unshare("alex", "sam", *control_of(accounts, "alex"))
-        assert call("sam", "hktv_get_cart")["error"]["code"] == "not_signed_in"
+        revoke(accounts, "alex", "sam")
+        assert call("sam", "hktv_get_cart")["error"]["code"] == "shared_access_removed"
         accounts.share("alex", "sam", *control_of(accounts, "alex"))
+        choose(accounts, "sam", "alex")
         alex_site.signed_in = False  # Alex's HKTVmall sign-in ended
         accounts._services["alex"].session.mark("dead", accounts._services["alex"].session.generation)
         member = call("sam", "hktv_get_cart")["error"]

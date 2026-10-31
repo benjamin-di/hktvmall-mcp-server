@@ -11,6 +11,23 @@ from __future__ import annotations
 from typing import Any
 
 NEXT_STEP: dict[str, str] = {
+    "account_selection_needed": (
+        "No shopping account is selected. Call hktv_connect and give the person its link to choose their own "
+        "account or one shared with them. Never choose for them."
+    ),
+    "shared_access_removed": (
+        "Access to the selected shared account was removed or changed. Call hktv_connect and give the person "
+        "its link to choose an account. Do not fall back to another account."
+    ),
+    "account_changed": (
+        "The shopping account or its access changed, or this update has no current account_context. Nothing "
+        "was changed by this request. Call hktv_get_cart, check whose basket it is, and reassess the requested "
+        "changes before sending an update with its account_context."
+    ),
+    "history_not_shared": (
+        "This shared connection permits shopping but not reading order history. Tell the person; only the "
+        "connection owner can grant order-history access. Do not switch accounts to obtain it."
+    ),
     "connection_disconnected": (
         "Server access to this HKTVmall connection is stopped. Call hktv_connect and give the person its link to "
         "reconnect."
@@ -77,6 +94,10 @@ SIGN_IN_CODES = frozenset(
 ACTION: dict[str, str] = {
     **{code: "human_account_check" for code in SIGN_IN_CODES | {"owner_reconnect", "not_connected"}},
     "basket_unreadable": "human_account_check",
+    **{
+        code: "human_account_check"
+        for code in ("account_selection_needed", "shared_access_removed", "history_not_shared")
+    },
     **{code: "retry_later" for code in ("blocked", "budget_exhausted", "busy", "upstream_error", "internal_error")},
     **{code: "repair_local_infrastructure" for code in ("session_source_missing", "schema_changed")},
 }

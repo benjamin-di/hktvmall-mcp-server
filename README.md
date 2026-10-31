@@ -60,7 +60,7 @@ latest code.
 | `hktv_delivery_slots()` | HKTVmall's next delivery slots for your first address, the fee, `free_from` and the slot already chosen. You pick a slot at checkout. |
 | `hktv_reviews(id, limit 1..5, rating)` | Public reviews: average, count, breakdown by rating and recent comments; nothing about the reviewers. |
 | `hktv_get_cart()` | The basket as HKTVmall shows it: lines, delivery groups with fees and `amount_to_free_delivery`, totals (as HKTVmall's order summary computes them), `checkout_url`, and HKTVmall's checkout warnings in `notes`. |
-| `hktv_update_cart(changes[{id, quantity}], confirmed)` | Exact quantities (0 removes); each change's outcome (`applied`, `adjusted` with the reason such as `stock_limit`, or `rejected` with the reason such as `out_of_stock` or `store_closed`) is read back from HKTVmall. Raising a line above 15 or adding over HK$1,500 in one call changes nothing (`requires_buyer_review`) unless the person agreed (`confirmed`). |
+| `hktv_update_cart(changes[{id, quantity}], confirmed, account_context)` | Exact quantities (0 removes); each change's outcome (`applied`, `adjusted` with the reason such as `stock_limit`, or `rejected` with the reason such as `out_of_stock` or `store_closed`) is read back from HKTVmall. Raising a line above 15 or adding over HK$1,500 in one call changes nothing (`requires_buyer_review`) unless the person agreed (`confirmed`). People mode requires the latest basket's `account_context`. |
 | `hktv_recent_orders(limit 1..50, offset, items)` | Your order history, newest first: number, date, status, total, deliveries and the items (id, title, quantity, line total). Pages back through the whole history with `offset`. Read-only: never the address, payment or vouchers. Re-ordering goes through `hktv_update_cart`, line by line. |
 | `hktv_status(check)` | Sign-in state, today's budget, any pause and the latest unresolved error; on a server that hosts several people, `connection` says whose HKTVmall account calls use (`owner`, `shared`). `check=true` runs a cached health check against HKTVmall (for monitoring). |
 | `hktv_connect()` | The person's My connections link (`url`), where they connect, reconnect or share HKTVmall; on a local server, `how` tells them the login command. Starts nothing. |
@@ -69,6 +69,9 @@ Money is `{"cents": 12990, "display": "HK$129.90"}`. Errors are `{"error": {code
 the `next_step` text tells the assistant what to do, and `action` is `retry_later`, `human_account_check`,
 `repair_local_infrastructure` or `none`. A call that changed anything never returns an error: it reports each
 change's outcome.
+
+On hosted people-mode servers, `hktv_get_cart` also returns `connection` (`owner`, `shared`) and `account_context`.
+The latter must accompany basket updates; account choice remains a human action on My connections.
 
 ## Safety
 
@@ -162,33 +165,50 @@ browser window the server shows them; nothing about the login is automated. The 
 connects stays theirs: a reconnect must be the same account, and an HKTVmall account another person connected is
 refused, so nobody signs in to someone else's account.
 
-**Sharing is the owner's choice.** A household often shops in one basket. The person who connected it can share it
-with others on My connections: their assistants then use the same basket and order history, without the password,
-and cannot reconnect, disconnect or share it. Nothing is shared until the owner says so, a person uses at most one
-account (their own, or the one shared with them), and calls never fall back to another account: when the owner's
-connection needs signing in again, members get `owner_reconnect` naming the owner. Unsharing, a member's **Stop
-using** and the owner's **Disconnect** apply from the next call. `hktv_status.connection` names the account in use.
+**Sharing and selection are separate choices.** A household often shops in one basket. The person who connected it can share it
+with others on My connections. Recipients can read and change that basket; order-history access is optional and
+off by default for new shares. They never receive the password and cannot reconnect, disconnect or share the owner's
+connection. The recipient explicitly chooses **Use [owner]'s account**; an offer never changes routing.
+
+A person can keep their own connection and several shared offers, with one selected shopping account. **Use my
+account** switches back without another provider sign-in. Their own connection stays connected while they use a
+shared account, including for people they share with. Disconnecting their own account does not prevent choosing a
+shared account. Changing the owned provider account is a separate operation and is not supported.
 
 To share a household account:
 
 1. Everyone opens **My connections** from `hktv_connect` and signs in with their own identity-provider login.
    This makes them appear in the sharing list; recipients do not need to connect an HKTVmall account.
-2. The account owner connects HKTVmall, then returns to **My connections → Shared with** and presses **Share**
-   beside the recipient. Person IDs beside display names distinguish people with the same name.
-3. The recipient opens My connections to see **Using [owner]'s HKTVmall account**. Their assistant now uses that
-   basket and order history. The owner can **Stop sharing**; the recipient can **Stop using**.
+2. The owner connects HKTVmall, then uses **Shared with → Share** beside the recipient. Optionally enable
+   **Also allow reading order history**. Person IDs distinguish identical display names.
+3. The recipient opens **Shared accounts available to me**, reads the access scope and presses **Use [owner]'s
+   account**. The page and basket result identify which account their assistant uses.
 
-Sharing controls belong to the owner and remain available during a reconnect. Before connecting, the page explains
-where sharing will appear. If someone is missing from the list, they must open My connections once or make an
-admitted MCP call. If they have their own connection already, it cannot be replaced with a shared one, even after
-Disconnect: the account binding is retained. Single-account/stdio servers have no sharing page; hosted sharing
-requires people mode and the browser routes below, supported since 0.14.
+**Stop sharing** removes the owner's grant. **Leave shared account** removes the recipient's access and clears their
+selection if they were using it. Neither operation selects another account. **Disconnect** removes the owner's
+stored login, stopping that connection for all its users until the owner reconnects. Its confirmation explains who
+is affected. Sharing controls remain available during reconnects, independently of which account the owner uses.
+
+Calls never fall back: an expired or disconnected shared account needs its owner to reconnect (`owner_reconnect`);
+removed or changed access needs an explicit new choice (`shared_access_removed`). Reissuing a grant does not restore
+a previous selection. Updating a grant's history permission also requires the recipient to choose the updated
+offer. Previously admitted work can finish on its captured account; switching never redirects it.
+
+In people mode, read `hktv_get_cart` before editing. Pass its opaque `account_context` to `hktv_update_cart`. A
+switch (including away and back), sharing change or reconnect invalidates the context; a stale or missing context
+returns `account_changed` before sending any provider request. Re-read the basket, check its owner and reassess the
+request. This guards account selection, not basket contents changed by someone in the provider's app. Single-account
+and stdio clients do not need this argument.
+
+If someone is missing from the sharing list, they must open My connections once or make an admitted MCP call.
+Single-account/stdio servers have no sharing page; hosted sharing requires people mode and the browser routes below.
 
 Register exactly `<HKTVMALL_PUBLIC_URL>/connections/callback` with the OIDC provider; require its signed group and the
-administrator-controlled person claim. The first explicit Connect, Disconnect or Share pins the person's issuer and
-immutable subject; status reads never do. Connect and Share require a fresh authentication (within five minutes).
-Every page, form, viewer asset and WebSocket checks the person; forms carry the record's epoch, so a stale form
-changes nothing. A link, MCP token or forwarded header cannot substitute for the browser sign-in. Missing OIDC
+administrator-controlled person claim. The first explicit connection, selection or sharing action pins the person's
+issuer and immutable subject; status reads never do. Connect and Share require a fresh authentication (within five
+minutes). Every page, form, viewer asset and WebSocket checks the person; forms carry the relevant connection,
+selection and grant revisions, so a stale form changes nothing. A link, MCP token or forwarded header cannot
+substitute for the browser sign-in. Missing OIDC
 settings refuse browser-enabled HTTP startup. Connecting grants no new assistant permissions; browser Sign out ends
 only that browser session.
 
@@ -196,16 +216,23 @@ The login service (`HKTVMALL_LOGIN_URL`, `HKTVMALL_LOGIN_TOKEN`) shows HKTVmall'
 automates no credential entry. A wrong or failed sign-in keeps the accepted session; closing the page keeps a
 resumable window, and a completed save continues without the page. `scripts/paste_e2e.py` verifies signed synthetic
 OIDC, owner isolation, the real Xvfb/x11vnc/noVNC viewer and clipboard input, page-close recovery, saving, sharing
-and stopping, disconnect and logout. It never contacts HKTVmall.
+selection, mobile/keyboard switching, revocation, leaving, disconnect and logout. It never contacts HKTVmall.
 
 Disconnect persists a barrier before cancelling windows or deleting the sealed session. It blocks new calls, cached
 clients, cookie refresh and keep-alive across restarts; the record, its sharing, budgets and caches stay. Reconnect
 advances the epoch and session generation. `hktvmall-mcp admin accounts` lists people (masked emails, state, sharing)
 and `hktvmall-mcp admin disconnect PERSON` uses the same disconnect path.
 
+Hosted upgrades migrate existing people controls to version 2 while preserving routing and existing history grants.
+Stop traffic while updating all readers and writers. Older images refuse the new controls and cannot be used as
+rollback targets after migration; see [upgrade and recovery](docs/PERMISSIONS.md#upgrading-hosted-controls).
+Refresh cached MCP tool definitions so basket updates can supply `account_context`.
+The optional deep health check (`hktv_status(check=true)`) includes an order-history probe, so shared connections
+need history permission for it; ordinary status reads remain available with shopping access.
+
 Forward only GET `/connections/`, `/connections/status`, `/connections/login`, `/connections/callback`, POST
 `/connections/start`, `/connections/disconnect`, `/connections/share`, `/connections/unshare`,
-`/connections/leave`, `/connections/logout`, and the `/connect/<id>` viewer shapes. Strip Authorization and
+`/connections/leave`, `/connections/select`, `/connections/logout`, and the `/connect/<id>` viewer shapes. Strip Authorization and
 forwarded identity headers on browser routes; preserve Cookie and Origin. Keep `/mcp` behind gateway admission.
 Releases before 0.14 read operator account and manager maps (`HKTVMALL_CONNECTIONS_ACCOUNTS_FILE`,
 `HKTVMALL_CONNECTIONS_MANAGERS_FILE`) and a default-account browser backend (`HKTVMALL_DEFAULT_LOGIN_URL`); these
@@ -266,6 +293,10 @@ not regular files and timestamps in the future are rejected. `session.json` uses
 
 | Code | What to do |
 |---|---|
+| `account_selection_needed` | Open My connections and explicitly select your own or an available shared account. |
+| `shared_access_removed` | The selected shared grant was removed or changed; choose an available account. |
+| `account_changed` | No changes were sent. Re-read the basket and reassess the request using its new `account_context`. |
+| `history_not_shared` | The selected shared account permits shopping but not order history; only its owner can grant that access. |
 | `not_signed_in` | Nothing connected yet: open the `hktv_connect` link (on a local server, run `hktvmall-mcp login`), or ask a household member to share their connection. |
 | `connection_disconnected` | Server access was deliberately stopped; reconnect on My connections. |
 | `session_expired` | HKTVmall ended the sign-in: reconnect on My connections, or run `hktvmall-mcp login` again locally (a snapshot needs a newer generation). |

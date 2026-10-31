@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import json
 import logging
 import re
@@ -32,11 +33,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import account_connections as sharing
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .auth import BEARER_CLIENT
-from .connections_state import MAX_SHARES, ConnectionState
+from .connections_state import MAX_SHARES, ConnectionState, revision
 from .errors import HktvError
 from .fsio import locked, read_private
 from .session import OwnedSession
@@ -140,6 +142,7 @@ class Accounts:
         self.settings, self.transport, self._clock = settings, transport, clock
         self.directory = settings.state_dir / "people"
         self._services: dict[str, HktvService] = {DEFAULT: default}
+        self._epochs: dict[str, str] = {}
         self._lock = threading.Lock()
         default_control = self.control(DEFAULT)
         default.session.access_check = default_control.require_active
@@ -182,8 +185,11 @@ class Accounts:
         control = self.control(person)
         folder = self.directory / person
         if (folder / (CONTROL + ".json")).exists() or not create:
+            with self._people_lock():
+                self._migrate_people()
             return control
         with self._people_lock():
+            self._migrate_people()
             if folder.exists() or folder.is_symlink():
                 return control  # created meanwhile, or stored state without its control: read() decides
             if len(self.known()) >= MAX_PEOPLE:
@@ -191,13 +197,77 @@ class Accounts:
             staging = self.directory / f".new-{person}-{secrets.token_hex(4)}"  # never a person name
             staging.mkdir(mode=0o700)
             try:
-                ConnectionState(staging, CONTROL, require_existing=False).initialize()
+                staged = ConnectionState(staging, CONTROL, require_existing=False)
+                staged.initialize()
+                with staged.edit() as data:
+                    data.update(
+                        version=2,
+                        selection={"account": person, "grant": None},
+                        selection_revision=revision(),
+                        shares={},
+                        shared_with=[],
+                    )
                 staging.rename(folder)  # a record appears whole or not at all
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise
             log.info("person %s recorded", _tag(person))
         return control
+
+    def _migrate_people(self):
+        """Under the people lock, preserve legacy routing and grants. New controls reject old readers.
+
+        Each rename is durable independently. Deterministic legacy grant revisions let a partial migration
+        resume without changing the grant references already written to v2 recipients.
+        Missing or unreadable retained controls are never repaired.
+        """
+        records, damaged = {}, False
+        for person in self._folders():
+            try:
+                records[person] = self.control(person).read()
+            except HktvError:
+                damaged = True
+        legacy = {p for p, data in records.items() if data["version"] == 1}
+        if not legacy:
+            return
+        if damaged:
+            raise HktvError("connection_disconnected")
+        grants = {
+            p: data["shares"]
+            if data["version"] == 2
+            else {
+                m: {
+                    "revision": base64.urlsafe_b64encode(
+                        hmac.digest(
+                            self.settings.session_key,
+                            f"legacy-share:{p}:{m}".encode(),
+                            "sha256",
+                        )[:24]
+                    ).decode(),
+                    "order_history": True,
+                }
+                for m in data.get("shared_with", [])
+            }
+            for p, data in records.items()
+        }
+        for person in sorted(legacy):
+            data = records[person]
+            own = data["provider_email"] is not None or (self.directory / person / "session.bin").exists()
+            incoming = [p for p, members in grants.items() if person in members and p != person]
+            if not own and len(incoming) > 1:
+                raise HktvError("not_connected", log_detail="ambiguous legacy selection")
+            owner = person if own or not incoming else incoming[0]
+            with self.control(person).edit() as current:
+                current.update(
+                    version=2,
+                    shares=grants[person],
+                    shared_with=sorted(grants[person]),
+                    selection={
+                        "account": owner,
+                        "grant": None if owner == person else grants[owner][person]["revision"],
+                    },
+                    selection_revision=revision(),
+                )
 
     def _people_lock(self):
         """Serialises record creation and every decision that spans several people (connect, share)."""
@@ -211,22 +281,25 @@ class Accounts:
             return True
         return self.control(person).read()["provider_email"] is not None
 
-    def sharer(self, person: str) -> str | None:
-        """The one person who shares their connection with ``person``, if any. An unreadable record might be the
-        one that shares with them, so it refuses rather than letting them fall back to their own account."""
-        found = []
+    def offers(self, person: str) -> tuple[list[dict], bool]:
+        """Readable grants and whether any records were unavailable; never infer grants from damaged state."""
+        found, unavailable = [], False
         for owner in self._folders():
             if owner == person:
                 continue
             try:
-                shared = self.control(owner).read().get("shared_with", [])
+                grant = self.control(owner).read()["shares"].get(person)
             except HktvError:
-                raise HktvError("session_source_missing", log_detail="unreadable record") from None
-            if person in shared:
-                found.append(owner)
-        if len(found) > 1:
-            raise HktvError("not_connected", log_detail="shared by several people")
-        return found[0] if found else None
+                unavailable = True
+                continue
+            if grant is not None:
+                found.append({"owner": owner, **grant})
+        return found, unavailable
+
+    def sharer(self, person: str) -> str | None:
+        """The selected shared owner, even if their grant has since been revoked (never a fallback)."""
+        selected = self.control(person).read()["selection"]
+        return selected["account"] if selected and selected["account"] != person else None
 
     def _folders(self) -> list[str]:
         """Every person folder, including one whose control record is missing."""
@@ -255,41 +328,123 @@ class Accounts:
             data["name"] = clean
 
     def account_for(self, person: Any) -> str:
-        """The account a verified person's calls use: their own, else the one shared with them."""
+        """The explicitly selected account. Ownership and offers never imply a routing change."""
         self.person(person)
-        if self.owns(person):
-            return person
-        return self.sharer(person) or person
+        with self._people_lock():
+            return self._selected(person)[0]
 
-    def share(self, owner: str, member: str, epoch: str, state: str) -> None:
+    @staticmethod
+    def _selection(data):
+        choice = data["selection"]
+        return sharing.Selection(
+            sharing.Choice(choice["account"], choice["grant"]) if choice else None,
+            data["selection_revision"],
+        )
+
+    @staticmethod
+    def _grant(data):
+        return (
+            sharing.Grant(data["revision"], frozenset({"shopping", *(["history"] if data["order_history"] else [])}))
+            if data
+            else None
+        )
+
+    @staticmethod
+    def _save_selection(data, selected):
+        data.update(
+            selection={"account": selected.choice.owner, "grant": selected.choice.grant_revision}
+            if selected.choice
+            else None,
+            selection_revision=selected.revision,
+        )
+
+    @staticmethod
+    def _sharing_call(operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except sharing.ConnectionError as error:
+            raise HktvError("history_not_shared" if error.code == "capability_not_shared" else error.code) from None
+
+    def _selected(self, person):
+        data = self.control(person).read()
+        selected = self._selection(data)
+        grant = None
+        if selected.choice and selected.choice.owner != person:
+            try:
+                grant = self.control(selected.choice.owner).read()["shares"].get(person)
+            except HktvError:
+                raise HktvError("session_source_missing", log_detail="selected owner control unavailable") from None
+        choice = self._sharing_call(sharing.resolve, person, selected, self._grant(grant))
+        return choice.owner, data, grant
+
+    def select(self, person, owner, expected, grant=None):
+        self.person(person)
+        with self._people_lock(), self.control(person).edit() as data:
+            if owner == DEFAULT or owner not in self.known():
+                raise HktvError("not_connected")
+            offered = self.control(owner).read()["shares"].get(person) if owner != person else None
+            # Preserve the established public stale-own-form outcome.
+            if owner == person and grant is not None:
+                raise HktvError("account_changed")
+            if grant is not None and (not isinstance(grant, str) or re.fullmatch(r"[A-Za-z0-9_-]{32}", grant) is None):
+                raise HktvError("shared_access_removed")
+            selected = self._sharing_call(
+                sharing.choose,
+                person,
+                self._selection(data),
+                sharing.Choice(owner, grant),
+                self._grant(offered),
+                expected=expected,
+            )
+            self._save_selection(data, selected)
+
+    def share(self, owner: str, member: str, epoch: str, state: str, *, history=False, grant="new") -> None:
         with self._people_lock():  # no connect or other share can change ownership between check and write
             if member == owner or member not in self.known():
                 raise HktvError("not_connected")
-            if not self.owns(owner) or self.owns(member):
-                raise HktvError("not_connected")
-            if self.sharer(member) not in (None, owner):
+            self.control(member).read()  # a retained but unreadable identity cannot receive a new grant
+            if not self.owns(owner) or type(history) is not bool:
                 raise HktvError("not_connected")
             with self.control(owner).edit() as data:
                 ConnectionState.expected(data, epoch, state)
                 shared = list(data.get("shared_with", []))
+                previous = data["shares"].get(member)
+                offered = self._sharing_call(
+                    sharing.offer,
+                    self._grant(previous),
+                    expected=None if grant == "new" else grant,
+                    capabilities=frozenset({"shopping", *(["history"] if history else [])}),
+                )
                 if member not in shared:
                     if len(shared) >= MAX_SHARES:
                         raise HktvError("not_connected")
                     data["shared_with"] = sorted([*shared, member])
+                data["shares"][member] = {"revision": offered.revision, "order_history": history}
+
         log.info("person %s shared their connection with %s", _tag(owner), _tag(member))
 
-    def unshare(self, owner: str, member: str, epoch: str | None = None, state: str | None = None) -> None:
-        with self.control(owner).edit() as data:
-            ConnectionState.expected(data, epoch, state)
-            if member not in data.get("shared_with", []):
-                raise HktvError("not_connected")
-            data["shared_with"] = [p for p in data["shared_with"] if p != member]
+    def unshare(self, owner: str, member: str, epoch: str, state: str, *, grant: str, leaving=False) -> None:
+        if owner == DEFAULT:
+            raise HktvError("not_connected")
+        with self._people_lock():
+            with self.control(owner).edit() as data:
+                ConnectionState.expected(data, epoch, state)
+                current = data["shares"].get(member)
+                self._sharing_call(sharing.revoke, self._grant(current), expected=grant)
+                data["shared_with"] = [p for p in data["shared_with"] if p != member]
+                del data["shares"][member]
+            if leaving:
+                # Revocation commits first. A crash remains denied. Keep the people lock until selection
+                # is cleared, including a stale scope revision, so no new choice can be cleared by this leave.
+                with self.control(member).edit() as data:
+                    self._save_selection(data, sharing.leave(self._selection(data), owner))
         log.info("person %s stopped sharing with %s", _tag(owner), _tag(member))
 
     def forget(self, account: str) -> None:
         if account != DEFAULT:
             with self._lock:
                 self._services.pop(account, None)
+                self._epochs.pop(account, None)
 
     @property
     def default(self) -> HktvService:
@@ -307,16 +462,49 @@ class Accounts:
             return self.get(self.account_for(person)) if self.people else self.get(DEFAULT)
         raise HktvError("not_connected", log_detail="unknown client")
 
+    def admit(self, client_id, *, person=None, open_default=False, context=None, writing=False, history=False):
+        """Snapshot authorization and routing once per tool call, before any cache or provider access.
+
+        Previously admitted work may finish on its captured service. It never resolves a different account
+        halfway through a call. A context is an opaque MAC, not permission to choose an account.
+        """
+        if not self.people:
+            return self.resolve(client_id, open_default=open_default), None
+        if client_id != BEARER_CLIENT:
+            raise HktvError("not_connected")
+        self.person(person)
+        with self._people_lock():
+            owner, data, grant = self._selected(person)
+            control = self.control(owner).read()
+            raw = json.dumps(
+                ["basket-context-v1", person, owner, data["selection_revision"], control["epoch"], grant],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            token = hmac.digest(self.settings.session_key, raw, "sha256").hex()
+            if writing and (
+                not isinstance(context, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", context)
+                or not hmac.compare_digest(context, token)
+            ):
+                raise HktvError("account_changed")
+            if history:
+                self._sharing_call(
+                    sharing.resolve, person, self._selection(data), self._grant(grant), capability="history"
+                )
+            return self.get(owner), token
+
     def get(self, account: str) -> HktvService:
-        self.control(account).require_active()
+        epoch = self.control(account).require_active()
         with self._lock:
             service = self._services.get(account)
-            if service is not None:
+            if service is not None and (account == DEFAULT or self._epochs.get(account) == epoch):
                 return service
             if account == DEFAULT or self.settings.session_key is None:
                 raise HktvError("not_connected", log_detail="no such account")
             service = self._build(account)
             self._services[account] = service
+            self._epochs[account] = epoch
             return service
 
     def services(self) -> list[HktvService]:
@@ -389,8 +577,6 @@ class Accounts:
             if expected and expected != email:
                 raise HktvError("account_mismatch")
             if not expected:  # binding a provider account for the first time: it must be nobody else's
-                if self.sharer(person) is not None:
-                    raise HktvError("not_connected")  # a member stops using the shared connection first
                 for other in self._folders():
                     if other != person and self._bound(other) in (email, None):
                         raise HktvError("account_mismatch")  # theirs, or unreadable and possibly theirs

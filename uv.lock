@@ -19,6 +19,15 @@ constraints = [
 ]
 
 [[package]]
+name = "account-connections"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/1c/8488bb9d25f51bcb593b770b663f73c8328fa6824cbf1420036a771509d2/account_connections-0.1.1.tar.gz", hash = "sha256:f235e2f58ed63fbe046e523dff44b4692a337e6ede5467af7ad63ba88473ecee", size = 33695, upload-time = "2026-10-31T04:29:09.92Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/b5/0a4031e41ed2876d0140f0c1cb537da06e9659b6834e69ff1598d66700cf/account_connections-0.1.1-py3-none-any.whl", hash = "sha256:6bb3d7043d4dd02610cd7ed73cbd91764ea9f5d88714d2df65a309786b8962a6", size = 6117, upload-time = "2026-10-31T04:29:08.239Z" },
+]
+
+[[package]]
 name = "aiofile"
 version = "3.12.3"
 source = { registry = "https://pypi.org/simple" }
@@ -507,9 +516,10 @@ wheels = [
 
 [[package]]
 name = "hktvmall-mcp"
-version = "0.14.6"
+version = "0.15.4"
 source = { editable = "." }
 dependencies = [
+    { name = "account-connections" },
     { name = "cryptography" },
     { name = "fastmcp" },
     { name = "platformdirs" },
@@ -529,11 +539,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "account-connections", specifier = "==0.1.1" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "fastmcp", specifier = "==4.0.10" },
     { name = "patchright", marker = "extra == 'login'", specifier = "==1.61.2" },
     { name = "platformdirs", specifier = ">=4.3" },
-    { name = "signin-window", extras = ["automation", "oidc"], specifier = ">=0.4.12,<0.5" },
+    { name = "signin-window", extras = ["automation", "oidc"], specifier = ">=0.4.17,<0.5" },
 ]
 provides-extras = ["login"]
 
@@ -1384,16 +1395,16 @@ wheels = [
 
 [[package]]
 name = "signin-window"
-version = "0.4.12"
+version = "0.4.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "starlette" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/56/97/00abbdde47ea7943c08e567eff20a8240960c416b99adf067a7993218739/signin_window-0.4.12.tar.gz", hash = "sha256:8ae343ff2f1d57b1c4df7794f614f4fa4d91fe3704f6cc9f09bd78412393a821", size = 255156, upload-time = "2026-10-29T00:17:39.486Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/57/cbb5a498521fbd0d72a057dfa80fc4d449060754fab574ca6284bb31d75d/signin_window-0.4.17.tar.gz", hash = "sha256:8be95e18f9ff2a4487332883785720d8e5ee219a7912116ad49ca05d6056d646", size = 266573, upload-time = "2026-10-30T16:48:37.817Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/91/51726470c216592445220e1ae748557747ef448c1298af6ad5f12a611ae6/signin_window-0.4.12-py3-none-any.whl", hash = "sha256:d7800efa346bd048d68151be413f38777925aead61fb8643ada84018992385b3", size = 122188, upload-time = "2026-10-29T00:17:37.974Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/24/859b4accf31a343e6aa20e18afd6a5c84632840e577be467b1090f807a8a/signin_window-0.4.17-py3-none-any.whl", hash = "sha256:135f4c073409fc82c930f2703525aa0725f37ee90ff36f9d367e33d730259bf0", size = 128879, upload-time = "2026-10-30T16:48:36.742Z" },
 ]
 
 [package.optional-dependencies]

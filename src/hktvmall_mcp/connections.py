@@ -2,7 +2,7 @@
 
 People authenticate through OIDC (signin-window's ``BrowserAuth``); the administrator-owned ``person_id`` claim
 selects their record, created on first contact. Only the owner connects, reconnects, disconnects or shares a
-connection; a member of a shared connection can stop using it and nothing else (docs/PERMISSIONS.md).
+connection. A recipient chooses or leaves shared access and independently manages their own slot (docs/PERMISSIONS.md).
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ import logging
 import os
 from urllib.parse import parse_qs, urlsplit
 
+from account_connections.ui import action_form, selection_controls
 from signin_window.client import LoginClient
+from signin_window.connections import page as connection_page
 from signin_window.oidc import BrowserAuth, OIDCConfig
 from signin_window.page import PageText
 from signin_window.relay import AttemptContext, LinkLimited, Relay
@@ -95,6 +97,7 @@ class Connections:
                     Route("/connections/share", self.share, methods=["POST"]),
                     Route("/connections/unshare", self.unshare, methods=["POST"]),
                     Route("/connections/leave", self.leave, methods=["POST"]),
+                    Route("/connections/select", self.select, methods=["POST"]),
                     *auth.routes(),
                     *self.relay.routes("/connect"),
                 ]
@@ -196,10 +199,16 @@ class Connections:
         return {"state": connection, "account": mask_email(email) if email else None}
 
     def view(self, person):
-        """What the page shows: the person's own connection, or the one shared with them, or none yet."""
+        """The selected connection; management of the owned connection is independent."""
         own = self.accounts.owns(person)
-        owner = None if own else self.accounts.sharer(person)
-        if owner is not None:
+        selected = self.accounts.control(person).read()["selection"]
+        if selected is None:
+            return {"role": "none", "state": "selection_needed"}
+        owner = selected["account"]
+        if owner != person:
+            grant = self.accounts.control(owner).read()["shares"].get(person)
+            if grant is None or grant["revision"] != selected["grant"]:
+                return {"role": "member", "owner": owner, "state": "access_removed"}
             state = {k: v for k, v in self.status(owner).items() if k == "state"}  # never the owner's sign-in link
             return {"role": "member", "owner": owner, **state}
         return {"role": "owner" if own else "none", **self.status(person)}
@@ -208,31 +217,28 @@ class Connections:
         """Everyone else on the roster and whether this owner can share with them."""
         shared = set(self.accounts.control(person).read().get("shared_with", []))
         out = []
-        for other in self.accounts.known():
+        # Existing grants must remain revocable even if the recipient's control record is lost.
+        for other in sorted(set(self.accounts.known()) | shared):
             if other == person:
                 continue
             entry = {"person": other, "name": self.accounts.name(other), "shared": other in shared}
-            if not entry["shared"]:
-                try:
-                    if self.accounts.owns(other):
-                        entry["blocked"] = "has their own HKTVmall connection"
-                    elif (current := self.accounts.sharer(other)) not in (None, person):
-                        entry["blocked"] = f"uses {self.accounts.name(current)}'s"
-                except HktvError:
-                    entry["blocked"] = "cannot be added right now"
             out.append(entry)
         return out
 
     # -- forms -----------------------------------------------------------------------------------
 
-    def changed(self):
+    def changed(self, exc=None):
+        message = {
+            "account_changed": "The account choice or sharing access changed in another window. Refresh and try again.",
+            "shared_access_removed": "This sharing offer was removed or changed. Choose an available account.",
+        }.get(exc.code if exc else None, "This connection changed or could not complete the action.")
         return self.page(
-            '<p role="alert">This connection changed or could not complete the action.</p>'
-            f'<p><a href="{html.escape(self.path, quote=True)}">Open My connections</a></p>',
+            f'<p role="alert">{message}</p>'
+            f'<p><a href="{html.escape(self.path, quote=True)}">Back to HKTVmall accounts</a></p>',
             status_code=409,
         )
 
-    def form(self, action, label, *, control=None, person=None, kind="button"):
+    def form(self, action, label, *, control=None, person=None, kind="button", extra=None, content=""):
         control = control or {}
         hidden = "".join(
             f'<input type="hidden" name="{name}" value="{html.escape(str(value), quote=True)}">'
@@ -240,40 +246,47 @@ class Connections:
         )
         if person is not None:
             hidden += f'<input type="hidden" name="person" value="{html.escape(person, quote=True)}">'
+        hidden += "".join(
+            f'<input type="hidden" name="{name}" value="{html.escape(str(value), quote=True)}">'
+            for name, value in (extra or {}).items()
+        )
+        if action == "disconnect":
+            kind = "danger"
+        elif label == "Reconnect":
+            kind = "secondary"
         return (
-            f'<form method="post" action="{self.path}{action}" style="display:inline">{hidden}'
-            f'<button class="{kind}">{html.escape(label)}</button></form>'
+            f'<form method="post" action="{self.path}{action}">{hidden}'
+            + content
+            + f'<button class="{kind}">{html.escape(label)}</button></form>'
         )
 
     @staticmethod
-    async def intent(request, *, person=False):
+    async def intent(request, *, person=False, extra=(), optional=()):
         raw = b""
         async for chunk in request.stream():
             raw += chunk
             if len(raw) > 4096:
                 raise HktvError("connection_disconnected")
         expected = {"epoch", "state", "person"} if person else {"epoch", "state"}
+        expected.update(extra)
         try:
-            fields = parse_qs(raw.decode(), keep_blank_values=True, max_num_fields=4)
-            if set(fields) != expected or any(len(value) != 1 or not value[0] for value in fields.values()):
+            fields = parse_qs(raw.decode(), keep_blank_values=True, max_num_fields=8)
+            if not expected <= set(fields) <= expected | set(optional) or any(
+                len(value) != 1 or not value[0] for value in fields.values()
+            ):
                 raise ValueError
             values = [fields[name][0] for name in ("epoch", "state", "person") if name in expected]
+            values += [fields[name][0] for name in extra]
+            values += [fields[name][0] if name in fields else None for name in optional]
             return tuple(values)
         except (ValueError, UnicodeError):
             raise HktvError("connection_disconnected") from None
 
     # -- pages -----------------------------------------------------------------------------------
 
-    def page(self, body, *, headers=None, status_code=200):
+    def page(self, body, *, headers=None, status_code=200, refresh=False):
         return HTMLResponse(
-            '<!doctype html><html lang="en"><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            "<title>My HKTVmall connection</title><style>"
-            "main{max-width:38rem;margin:3rem auto;padding:1rem;font:18px system-ui;line-height:1.5}"
-            "button{font:inherit;padding:.3rem .9rem;margin:.2rem .4rem .2rem 0;cursor:pointer}"
-            "ul{list-style:none;padding:0}li{padding:.4rem 0;border-bottom:1px solid #ddd}"
-            ".muted{color:#666}.quiet{background:none;border:1px solid #999}"
-            "</style><main><h1>My HKTVmall connection</h1>" + body + "</main></html>",
+            connection_page("HKTVmall accounts", body, refresh=refresh, login_url=self.path + "login"),
             headers={"Cache-Control": "no-store", **(headers or {})},
             status_code=status_code,
         )
@@ -284,71 +297,144 @@ class Connections:
         person = self.account(request)
         if person is None:
             return self.page(
-                '<p role="alert">This sign-in cannot manage this HKTVmall record. Ask the administrator.</p>'
-                + self.form("logout", "Sign out", kind="quiet")
+                '<p role="alert">This sign-in cannot manage this HKTVmall connection. '
+                "Sign in with another account, or ask your administrator to check access.</p>"
+                + self.form("logout", "Sign out of Connections", kind="quiet")
             )
+        body = "<p>Choose which basket your assistant uses. Switching never moves or changes basket items.</p>"
+        view, own = {}, {}
         try:
             view = self.view(person)
+            body += self.selection_body(person, view)
         except HktvError:
-            return self.page(
-                '<p role="alert">HKTVmall cannot be shown right now: a connection record needs the administrator\'s '
-                "attention.</p>" + self.form("logout", "Sign out", kind="quiet")
+            body += self.unavailable("The selected account")
+        try:
+            own = {"role": "owner" if self.accounts.owns(person) else "none", **self.status(person)}
+            body += self.owner_body(person, own)
+        except HktvError:
+            body += self.unavailable("Your own connection")
+        try:
+            body += self.offers_body(person)
+        except HktvError:
+            body += self.unavailable("Shared account choices")
+        try:
+            body += (
+                self.sharing_body(person, self.accounts.control(person).read())
+                if self.accounts.owns(person)
+                else self.sharing_help()
             )
-        headers = {}
-        if view["state"] in ("connecting", "disconnecting"):
-            headers["Refresh"] = "2"  # follow a kept save that completes just after this read
-        body = self.member_body(person, view) if view["role"] == "member" else self.owner_body(person, view)
+        except HktvError:
+            body += self.unavailable("Sharing management")
+        refresh = any(v.get("state") in ("connecting", "disconnecting") for v in (view, own))
         body += (
-            '<p class="muted">Connecting grants no new assistant access. Disconnect affects this server, not your '
-            "other devices.</p>" + self.form("logout", "Sign out", kind="quiet")
+            '<p class="muted">Connecting HKTVmall does not give an assistant permission to use it. '
+            "Signing out of Connections keeps your saved connections.</p>"
+            + self.form("logout", "Sign out of Connections", kind="quiet")
         )
-        return self.page(body, headers=headers)
+        return self.page(body, refresh=refresh)
+
+    @staticmethod
+    def unavailable(section):
+        return (
+            f'<p role="alert">{section} cannot be shown: a connection record needs the administrator’s attention. '
+            "Other available account controls can still be used.</p>"
+        )
+
+    def selection_body(self, person, view):
+        if view["state"] == "selection_needed":
+            text = "No account selected. Choose an account below to continue."
+        elif view["role"] == "member":
+            name = self.accounts.name(view["owner"])
+            text = {
+                "access_removed": f"Access to {name}'s account was removed or changed. Choose an available account.",
+                "connected": f"Using {name}'s HKTVmall account.",
+                "connecting": f"{name} is reconnecting HKTVmall. Your assistant is waiting for this account.",
+            }.get(view["state"], f"{name} needs to reconnect HKTVmall. Ask them to open Connections and reconnect.")
+        elif view["role"] == "none":
+            text = "No HKTVmall account connected yet. Connect your own or choose a shared account below."
+        else:
+            text = "Using my HKTVmall account."
+            if view["state"] != "connected":
+                text += " Reconnect your account to continue."
+        return (
+            '<section class="card panel active" aria-labelledby="selected-heading"><h2 id="selected-heading">'
+            "Your assistant’s account</h2>" + selection_controls(text, ()) + "</section>"
+        )
+
+    def choice_form(self, person, owner, grant, label):
+        control = self.accounts.control(person).read()
+        return action_form(
+            self.path + "select",
+            {
+                "epoch": control["epoch"],
+                "state": control["state"],
+                "person": owner,
+                "selection_revision": control["selection_revision"],
+                "grant": grant or "own",
+            },
+            label,
+        )
 
     def owner_body(self, person, view):
         control = self.accounts.control(person).read()
         state = view["state"]
-        if view["role"] == "none" and state == "sign_in_needed":
-            return (
-                '<p role="status">No HKTVmall account connected yet.</p>'
-                "<p>Connect your own HKTVmall account: you sign in on HKTVmall's own page in a window shown here. "
-                "Or, if someone in your household already connected theirs, ask them to share it with you "
-                "here.</p>" + self.form("start", "Connect HKTVmall", control=control) + self.sharing_help()
-            )
+        selected = control["selection"] == {"account": person, "grant": None}
         label = {
-            "connected": "Connected",
+            "connected": "Connection saved",
             "sign_in_needed": "Sign-in needed",
-            "check_needed": "Connection needs attention",
+            "check_needed": "We could not check this connection — try reconnecting",
             "connecting": "Sign-in in progress",
-            "disconnecting": "Disconnect pending",
-            "disconnected": "Server access stopped",
+            "disconnecting": "Access stopped — finish disconnecting",
+            "disconnected": "Disconnected",
         }[state]
-        body = '<p role="status">' + label
+        body = '<section class="card panel"><h2>My account</h2><p>' + label
         if view.get("account"):
             body += " · " + html.escape(view["account"])
+        if view["role"] == "owner":
+            body += " · " + ("Selected" if selected else "Not currently in use")
         body += "</p>"
+        if view["role"] == "owner" and not selected:
+            body += self.choice_form(person, person, None, "Use my account")
         if state == "disconnecting":
-            body += self.form("disconnect", "Retry disconnect", control=control)
+            body += self.form("disconnect", "Finish disconnecting", control=control)
         elif state == "connecting":
             body += f'<p><a href="{html.escape(view["url"], quote=True)}">Continue sign-in</a></p>'
         else:
-            body += self.form("start", "Reconnect" if state == "connected" else "Connect", control=control)
-            if state != "disconnected":
-                body += self.form("disconnect", "Disconnect", control=control, kind="quiet")
-        return body + (self.sharing_body(person, control) if view["role"] == "owner" else self.sharing_help())
+            body += self.form("start", "Reconnect" if view["role"] == "owner" else "Connect HKTVmall", control=control)
+            if view["role"] == "owner" and state != "disconnected":
+                members = len(control["shared_with"])
+                effect = (
+                    f"This also stops shared access for {members} {'person' if members == 1 else 'people'} "
+                    "until you reconnect. "
+                    if members
+                    else ""
+                )
+                body += (
+                    "<details class=manage><summary>Disconnect my account</summary><p>"
+                    + effect
+                    + "Your selected shared account, if any, is unaffected. "
+                    "Your saved sign-in is removed from this application. "
+                    "Your order history and browser profile are kept. "
+                    "It does not sign you out on other devices.</p>"
+                    + self.form("disconnect", "Disconnect", control=control, kind="quiet")
+                    + "</details>"
+                )
+        body += "</section>"
+        return body
 
     @staticmethod
     def sharing_help():
         return (
-            "<h2>Sharing</h2><p>After connecting your account, use <strong>Shared with</strong> on this page to "
-            "share your basket and order history. Only the person who connected the account can share it. "
-            "To use someone else's account, ask them to open this page with their own sign-in and share with you. "
+            "<h2>Sharing</h2><p>After connecting your account, use <strong>Shared with</strong> on this page. "
+            "To use someone else's account, ask them to share it with you, then choose it below. "
             "You do not need to connect an account of your own first.</p>"
         )
 
     def sharing_body(self, person, control):
         body = (
-            "<h2>Shared with</h2><p>People you share with can shop in this basket and see its order history "
-            "through their assistant. They cannot see your password, reconnect or disconnect it.</p>"
+            "<h2>Shared with</h2><p>Share shopping access to your own account. People you share with can read and "
+            "change this basket through their assistant. Order history is optional. They cannot see your password, "
+            "reconnect or disconnect it. They choose when to use it; sharing never switches their account.</p>"
         )
         candidates = self.candidates(person)
         if not candidates:
@@ -359,44 +445,72 @@ class Connections:
             )
         items = []
         for entry in candidates:
+            member = entry["person"]
             name = html.escape(entry["name"])
-            if entry["name"] != entry["person"]:
-                name += f' <span class="muted">({html.escape(entry["person"])})</span>'
-            if entry["shared"]:
-                items.append(
-                    f"<li>✓ {name} "
-                    + self.form("unshare", "Stop sharing", control=control, person=entry["person"], kind="quiet")
-                    + "</li>"
+            if entry["name"] != member and sum(other["name"] == entry["name"] for other in candidates) > 1:
+                name += f' <span class="muted">({html.escape(member)})</span>'
+            grant = control["shares"].get(member)
+            check_id = "history-" + member
+            checkbox = (
+                f'<label for="{check_id}"><input id="{check_id}" type="checkbox" name="history" value="1"'
+                + (" checked" if grant and grant["order_history"] else "")
+                + "> Also allow reading order history</label>"
+            )
+            item = "<li>" + ("✓ " if grant else "") + name
+            item += self.form(
+                "share",
+                "Update access" if grant else "Share",
+                control=control,
+                person=member,
+                extra={"grant": grant["revision"] if grant else "new"},
+                content=checkbox,
+            )
+            if grant:
+                item += self.form(
+                    "unshare",
+                    "Stop sharing",
+                    control=control,
+                    person=member,
+                    kind="quiet",
+                    extra={"grant": grant["revision"]},
                 )
-            elif "blocked" in entry:
-                items.append(f'<li class="muted">{name}: {html.escape(entry["blocked"])}</li>')
-            else:
-                items.append(
-                    f"<li>{name} " + self.form("share", "Share", control=control, person=entry["person"]) + "</li>"
-                )
+            items.append(item + "</li>")
         return body + "<ul>" + "".join(items) + "</ul>"
 
-    def member_body(self, person, view):
-        owner = view["owner"]
-        name = html.escape(self.accounts.name(owner))
-        control = self.accounts.control(owner).read()
-        state = view["state"]
-        if state == "connected":
-            status = f"Using {name}'s HKTVmall account."
-            detail = (
-                f"{name} shares it with you: your assistant shops in this household basket. Only {name} can "
-                "reconnect or disconnect it."
+    def offers_body(self, person):
+        body = "<h2>Shared accounts available to me</h2>"
+        offers, unavailable = self.accounts.offers(person)
+        if unavailable:
+            body += self.unavailable("Some shared accounts")
+        if not offers:
+            return body + (
+                '<p class="muted">No shared accounts available. Ask the account owner to share with you.</p>'
+                if not unavailable
+                else ""
             )
-        elif state == "connecting":
-            status, detail = f"{name} is reconnecting HKTVmall.", "Nothing to do here."
-        else:
-            status = f"{name} needs to reconnect HKTVmall."
-            detail = f"Ask {name} to open My connections; there is nothing to do here."
-        return (
-            f'<p role="status">{status}</p><p>{detail}</p>'
-            + self.form("leave", "Stop using", control=control, person=owner, kind="quiet")
-            + '<p class="muted">Stop using it to connect your own HKTVmall account instead.</p>'
-        )
+        selected = self.accounts.control(person).read()["selection"]
+        for offer in offers:
+            owner, grant = offer["owner"], offer["revision"]
+            name = html.escape(self.accounts.name(owner))
+            body += f'<section class="card panel"><h3>{name} <span class="muted">({html.escape(owner)})</span></h3>'
+            body += "<p>Your assistant can read and change this basket"
+            body += (
+                " and read its order history.</p>" if offer["order_history"] else ". Order history is not shared.</p>"
+            )
+            if selected == {"account": owner, "grant": grant}:
+                body += "<p>Selected. Your own connection stays available.</p>"
+            else:
+                body += self.choice_form(person, owner, grant, f"Use {self.accounts.name(owner)}'s account")
+            body += self.form(
+                "leave",
+                "Leave shared account" if selected and selected["account"] == owner else "Decline access",
+                control=self.accounts.control(owner).read(),
+                person=owner,
+                kind="quiet",
+                extra={"grant": grant},
+            )
+            body += "</section>"
+        return body
 
     async def status_route(self, request):
         person = self.account(request)
@@ -418,8 +532,6 @@ class Connections:
         control = self.accounts.control(person)
         try:
             expected, state = await self.intent(request)
-            if not self.accounts.owns(person) and self.accounts.sharer(person) is not None:
-                return self.changed()  # a member stops using the shared connection first
             async with control.lifecycle():
                 if self.account(request) != person or not self.fresh(request):
                     return Response(status_code=403)
@@ -435,7 +547,7 @@ class Connections:
         except LinkLimited:
             return self.page(
                 '<p role="alert">Too many sign-in attempts in the last hour. Try again later.</p>'
-                f'<p><a href="{html.escape(self.path, quote=True)}">Open My connections</a></p>',
+                f'<p><a href="{html.escape(self.path, quote=True)}">Back to HKTVmall accounts</a></p>',
                 status_code=429,
             )
         return RedirectResponse(link.url, status_code=303)
@@ -470,11 +582,17 @@ class Connections:
         if not self.fresh(request):
             return RedirectResponse(self.path + "login?reauth=1", status_code=303)
         try:
-            epoch, state, member = await self.intent(request, person=True)
+            epoch, state, member, grant, history = await self.intent(
+                request, person=True, extra=("grant",), optional=("history",)
+            )
+            if history not in (None, "1"):
+                return self.changed()
             self.accounts.control(person).bind(self.auth.identity(request))
-            await run_in_threadpool(self.accounts.share, person, member, epoch, state)
-        except HktvError:
-            return self.changed()
+            await run_in_threadpool(
+                self.accounts.share, person, member, epoch, state, history=history == "1", grant=grant
+            )
+        except HktvError as exc:
+            return self.changed(exc)
         return RedirectResponse(self.path, status_code=303)
 
     async def unshare(self, request):
@@ -482,11 +600,11 @@ class Connections:
         if person is None or not self.auth.origin_ok(request):
             return Response(status_code=403)
         try:
-            epoch, state, member = await self.intent(request, person=True)
+            epoch, state, member, grant = await self.intent(request, person=True, extra=("grant",))
             self.accounts.control(person).bind(self.auth.identity(request))
-            await run_in_threadpool(self.accounts.unshare, person, member, epoch, state)
-        except HktvError:
-            return self.changed()
+            await run_in_threadpool(self.accounts.unshare, person, member, epoch, state, grant=grant)
+        except HktvError as exc:
+            return self.changed(exc)
         return RedirectResponse(self.path, status_code=303)
 
     async def leave(self, request):
@@ -494,12 +612,27 @@ class Connections:
         if person is None or not self.auth.origin_ok(request):
             return Response(status_code=403)
         try:
-            epoch, state, owner = await self.intent(request, person=True)
-            if self.accounts.owns(person) or self.accounts.sharer(person) != owner:
-                return self.changed()
-            await run_in_threadpool(self.accounts.unshare, owner, person, epoch, state)
-        except HktvError:
-            return self.changed()
+            epoch, state, owner, grant = await self.intent(request, person=True, extra=("grant",))
+            self.accounts.control(person).bind(self.auth.identity(request))
+            await run_in_threadpool(self.accounts.unshare, owner, person, epoch, state, grant=grant, leaving=True)
+        except HktvError as exc:
+            return self.changed(exc)
+        return RedirectResponse(self.path, status_code=303)
+
+    async def select(self, request):
+        person = self.account(request)
+        if person is None or not self.auth.origin_ok(request):
+            return Response(status_code=403)
+        try:
+            epoch, state, owner, expected, grant = await self.intent(
+                request, person=True, extra=("selection_revision", "grant")
+            )
+            control = self.accounts.control(person)
+            control.expected(control.read(), epoch, state)
+            control.bind(self.auth.identity(request))
+            await run_in_threadpool(self.accounts.select, person, owner, expected, None if grant == "own" else grant)
+        except HktvError as exc:
+            return self.changed(exc)
         return RedirectResponse(self.path, status_code=303)
 
 

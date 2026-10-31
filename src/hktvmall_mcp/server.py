@@ -122,8 +122,12 @@ HKTVmall (Hong Kong) shopping for the connected HKTVmall account's basket. This 
 basket and sets quantities in it. It cannot place, pay for or change an order, addresses or vouchers: the person pays
 themselves at checkout_url.
 
-Flow: hktv_search with the whole list in one call -> choose products with the person -> hktv_update_cart ->
+Flow: hktv_search with the whole list in one call -> choose products with the person -> read hktv_get_cart -> update ->
 tell them the lines, the total and any amount_to_free_delivery, and give them checkout_url.
+In people mode, check the basket's connection and pass its account_context unchanged to hktv_update_cart.
+An account_changed error applies no changes: read the basket again, check whose account it is, and reassess the
+request. Never choose a different account for the person; they choose on My connections. Contexts last until a
+selection change, sharing change or reconnect, including a switch away and back to the same account.
 Products and basket lines carry url, HKTVmall's own page for them: link with it, never with an address built from
 an id (hktv_get_products gives the url for any id). To present picks or alternatives, call hktv_show_products with
 them and a short note each: claude.ai and ChatGPT show them as cards with photos, prices and links. Whenever you
@@ -224,6 +228,8 @@ class Basket(Open):
     delivery_groups: list[dict[str, Any]]
     totals: dict[str, Any]
     checkout_url: str
+    account_context: str | None = Field(default=None, description="Pass unchanged to basket updates in people mode")
+    connection: dict[str, Any] | None = None
 
 
 class UpdateResult(Open):
@@ -691,14 +697,20 @@ def create_server(
             return HktvError("owner_reconnect", service.account_id, log_detail=exc.code)
         return exc
 
-    async def call(tool: str, fn: Callable[..., T], *args: Any) -> T:
-        """Run ``fn`` (an HktvService method) for the caller's own account, or the one shared with them."""
+    async def call(tool: str, fn: Callable[..., T], *args: Any, account_context=None, reads_history=False) -> T:
+        """Admit once against the selected connection; every operation keeps that captured account."""
         token = get_access_token()
         person = caller()
         try:
-            service = await anyio.to_thread.run_sync(
+            service, context = await anyio.to_thread.run_sync(
                 functools.partial(
-                    accounts.resolve, token.client_id if token else None, open_default=auth is None, person=person
+                    accounts.admit,
+                    token.client_id if token else None,
+                    open_default=auth is None,
+                    person=person,
+                    context=account_context,
+                    writing=tool == "hktv_update_cart",
+                    history=reads_history,
                 )
             )
         except HktvError as exc:
@@ -721,6 +733,9 @@ def create_server(
             service.record_outcome(tool, "internal_error")
             raise ToolError(_json({"error": HktvError("internal_error").payload()})) from None
         service.record_outcome(tool, None)
+        if isinstance(result, Basket) and context is not None:
+            result.account_context = context
+            result.connection = {"owner": service.account_id, "shared": service.account_id != person}
         return result
 
     @mcp.tool(title="Search HKTVmall", annotations=READ, meta=CORE)
@@ -788,7 +803,9 @@ def create_server(
     async def hktv_get_cart() -> Basket:
         """The account's HKTVmall basket as HKTVmall shows it now: lines with quantity, unit price and
         stock left, delivery groups with fees and the amount still needed for free delivery, totals, and
-        checkout_url where the person pays. Needs the account's sign-in."""
+        checkout_url where the person pays. In people mode, connection identifies whose basket this is and
+        account_context identifies the current caller, selection, grant and reconnect epoch. It lasts until one of
+        those changes, including switching away and back. Needs the account's sign-in."""
         return await call("hktv_get_cart", HktvService.basket)
 
     @mcp.tool(title="Set basket quantities", annotations=WRITE, meta=CORE)
@@ -797,13 +814,19 @@ def create_server(
         confirmed: Annotated[
             bool, Field(description="True only after the person agreed to a change over the caps")
         ] = False,
+        account_context: Annotated[
+            str | None,
+            Field(max_length=64, description="People mode: account_context from the latest hktv_get_cart"),
+        ] = None,
     ) -> UpdateResult:
         """Set exact quantities for basket lines (quantity 0 removes; never adds on top). Up to 25 changes in
         one call. Each change's outcome (applied, adjusted, rejected with a reason) is read back from
         HKTVmall: report those, not what you asked for. Lines you do not name are left alone. Over 15 of one
         item or HK$1,500 added in one call it changes nothing and returns requires_buyer_review. Cannot place
-        or pay for an order. Needs the account's sign-in."""
-        return await call("hktv_update_cart", HktvService.update, changes, confirmed)
+        or pay for an order. In people mode, account_context must match the current caller, selected account,
+        sharing grant and reconnect epoch; a stale or missing context applies no changes.
+        Needs the account's sign-in."""
+        return await call("hktv_update_cart", HktvService.update, changes, confirmed, account_context=account_context)
 
     @mcp.tool(title="Delivery slots", annotations=READ)
     async def hktv_delivery_slots() -> DeliverySlots:
@@ -841,7 +864,7 @@ def create_server(
         10 new ones and says more_to_read), after that they come back at once. items=false lists up to 50 orders
         quickly without items. Read-only; never shows the address or payment. To buy items again, use
         hktv_update_cart with exact quantities. Needs the account's sign-in."""
-        return await call("hktv_recent_orders", HktvService.recent_orders, limit, offset, items)
+        return await call("hktv_recent_orders", HktvService.recent_orders, limit, offset, items, reads_history=True)
 
     @mcp.tool(title="Server status", annotations=READ)  # check=true reaches HKTVmall
     async def hktv_status(
@@ -851,7 +874,7 @@ def create_server(
         pause after HKTVmall pushed back, and last_error: the newest failure no later success has cleared
         (with its tool), else null. connection names whose HKTVmall account calls use (owner, shared);
         connection_health, when present, is the snapshot custodian's sign_in_needed or check_needed. check=true
-        adds the cached canary (monitoring)."""
+        adds the cached canary, including an order-history probe; shared connections need history permission."""
         person = caller()
 
         def status(service: HktvService, check: bool) -> dict[str, Any]:
@@ -866,7 +889,7 @@ def create_server(
                 out["connection"] = {"owner": service.account_id, "shared": service.account_id != person}
             return out
 
-        return await call("hktv_status", status, check)
+        return await call("hktv_status", status, check, reads_history=check)
 
     @mcp.tool(title="Sign-in link", annotations=LINK)
     async def hktv_connect() -> dict[str, Any]:

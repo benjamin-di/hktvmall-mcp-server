@@ -11,7 +11,7 @@ import pytest
 from signin_window.oidc import BrowserAuth, OIDCConfig
 from starlette.testclient import TestClient
 from test_accounts import accounts as accounts  # noqa: F401
-from test_accounts import connect, cookies
+from test_accounts import choose, connect, control_of, cookies
 from test_accounts import keyed as keyed  # noqa: F401
 
 from hktvmall_mcp.accounts import BEARER_CLIENT
@@ -74,12 +74,12 @@ class Browser(TestClient):
                 pass
         return super().post(url, **kwargs)
 
-    def submit(self, page_headers, action, person=None):
+    def submit(self, page_headers, action, person=None, *, extra=None):
         """Press the page's button for ``action`` (and ``person``), as a browser would."""
         page = self.get("/connections/", headers=page_headers).text
         for path, fields in forms(page):
             if path.endswith("/" + action) and (person is None or fields.get("person") == person):
-                return self.post(path, headers=page_headers, data=fields)
+                return self.post(path, headers=page_headers, data={**fields, **(extra or {})})
         raise AssertionError(f"no {action} form for {person} on the page")
 
 
@@ -174,15 +174,18 @@ def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(config
         assert accounts.control("second").read().get("shared_with", []) == []
         assert browser.submit(owner, "share", "third").status_code == 303
         assert accounts.control("second").read()["shared_with"] == ["third"]
+        assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
+        assert browser.submit(member, "select", "second").status_code == 303
         assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "second"
         member_page = browser.get("/connections/", headers=member).text
-        assert "Using Alex Owner's HKTVmall account." in member_page and "Stop using" in member_page
-        for action in ("start", "disconnect", "share", "unshare"):
+        assert "Using Alex Owner's HKTVmall account." in member_page and "Leave shared account" in member_page
+        for action in ("disconnect", "share", "unshare"):
             assert f'action="/connections/{action}"' not in member_page
-        assert '✓ Sam Member <span class="muted">(third)</span>' in browser.get("/connections/", headers=owner).text
+        assert "✓ Sam Member" in browser.get("/connections/", headers=owner).text
         assert browser.submit(member, "leave", "second").status_code == 303
         assert accounts.control("second").read()["shared_with"] == []
-        assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
+        with pytest.raises(HktvError, match="account_selection_needed"):
+            accounts.resolve(BEARER_CLIENT, person="third")
         browser.submit(owner, "share", "third")
         assert browser.submit(cookie(auth, fresh=False, name="Alex Owner"), "unshare", "third").status_code == 303
         assert accounts.control("second").read()["shared_with"] == []
@@ -197,7 +200,7 @@ def test_members_cannot_manage_and_strangers_cannot_reach_a_connection(configure
         record = accounts.control("second").read()
         fields = {"epoch": record["epoch"], "state": record["state"]}
         # A member's start, disconnect and share act on their own record only, never the owner's connection.
-        assert browser.post("/connections/start", headers=member).status_code == 409
+        assert browser.post("/connections/start", headers=member).status_code == 303
         assert browser.post("/connections/disconnect", headers=member, data=fields).status_code == 409
         refused = browser.post("/connections/share", headers=member, data={**fields, "person": "second"})
         assert refused.status_code == 409
@@ -223,7 +226,15 @@ def test_a_member_never_sees_the_owners_sign_in_link(configured, monkeypatch):
     with client(portal) as browser:
         browser.get("/connections/", headers=cookie(auth, "third"))
         browser.submit(cookie(auth), "share", "third")
-        monkeypatch.setattr(portal, "status", lambda person: {"state": "connecting", "url": PUBLIC + "/connect/x"})
+        browser.submit(cookie(auth, "third"), "select", "second")
+        original = portal.status
+        monkeypatch.setattr(
+            portal,
+            "status",
+            lambda person: (
+                {"state": "connecting", "url": PUBLIC + "/connect/x"} if person == account else original(person)
+            ),
+        )
         member = browser.get("/connections/status", headers=cookie(auth, "third")).json()
         page = browser.get("/connections/", headers=cookie(auth, "third")).text
     assert member == {"role": "member", "owner": account, "state": "connecting"}
@@ -280,19 +291,180 @@ def test_lost_or_damaged_saved_session_is_not_shown_as_connected(configured, mis
         assert browser.get("/connections/status", headers=cookie(auth)).json()["state"] == expected
 
 
-def test_people_who_cannot_be_added_are_shown_with_the_reason(configured):
+def test_people_with_owned_connections_and_other_shares_can_receive_offers(configured):
     accounts, _, auth, portal = configured
     connect(accounts, "third", "third@example.com", "third-session")
     accounts.note_name("third", "Kim")
     accounts.person("fourth")
     accounts.note_name("fourth", "Lee")
-    third = accounts.control("third").read()
-    accounts.share("third", "fourth", third["epoch"], third["state"])
+    accounts.share("third", "fourth", *control_of(accounts, "third"))
+    choose(accounts, "fourth", "third")
     with client(portal) as browser:
         page = browser.get("/connections/", headers=cookie(auth)).text
-    assert 'Kim <span class="muted">(third)</span>: has their own HKTVmall connection' in page
-    assert 'Lee <span class="muted">(fourth)</span>: uses Kim&#x27;s' in page
-    assert not [fields for action, fields in forms(page) if action.endswith("/share")]
+        assert "Kim" in page
+        assert "Lee" in page
+        assert browser.submit(cookie(auth), "share", "third").status_code == 303
+        assert browser.submit(cookie(auth), "share", "fourth").status_code == 303
+    assert accounts.account_for("third") == "third"
+    assert accounts.account_for("fourth") == "third"
+
+
+def test_owned_and_shared_controls_are_independent_and_stale_selection_forms_change_nothing(configured):
+    accounts, _, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    owner, member = cookie(auth), cookie(auth, "third")
+    with client(portal) as browser:
+        assert browser.submit(owner, "share", "third", extra={"history": "1"}).status_code == 303
+        page = browser.get("/connections/", headers=member).text
+        assert page.index("Shared accounts available to me") < page.index("<h2>Shared with</h2>")
+        offered = next(
+            fields for action, fields in forms(page) if action.endswith("/select") and fields["person"] == "second"
+        )
+        assert "and read its order history" in page
+        assert browser.post("/connections/select", headers=member, data=offered).status_code == 303
+        assert accounts.account_for("third") == "second"
+        assert "Shared with" in browser.get("/connections/", headers=member).text  # manages their own slot
+        assert browser.submit(member, "select", "third").status_code == 303
+        assert browser.post("/connections/select", headers=member, data=offered).status_code == 409
+        assert accounts.account_for("third") == "third"
+        assert browser.submit(member, "select", "second").status_code == 303
+        selected = accounts.control("third").read()["selection"]
+        assert browser.submit(member, "disconnect").status_code == 303
+        assert accounts.control("third").read()["selection"] == selected
+        assert accounts.account_for("third") == "second"
+        assert accounts.control("second").read()["state"] == "active"
+        assert browser.submit(owner, "share", "third").status_code == 303  # history unchecked: new scope
+        assert browser.get("/connections/status", headers=member).json()["state"] == "access_removed"
+        assert browser.post("/connections/select", headers=member, data=offered).status_code == 409
+
+
+@pytest.mark.parametrize("legacy_records", [False, True], ids=["retained-v2", "migrated-v1"])
+def test_existing_grants_remain_selectable_through_authenticated_forms(configured, legacy_records):
+    from test_selection import legacy
+
+    accounts, _, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    accounts.share("second", "third", *control_of(accounts, "second"))
+    if legacy_records:
+        for person in ("second", "third"):
+            legacy(accounts, person)
+        accounts.person("third")  # resume the established native migration
+    else:
+        with accounts.control("second").edit() as data:
+            data["shares"]["third"]["revision"] = "Aa_-" * 8
+    grant = accounts.control("second").read()["shares"]["third"]["revision"]
+    assert any(character not in "abcdef0123456789" for character in grant)
+    before = {person: accounts.control(person).read() for person in ("second", "third")}
+    member = cookie(auth, "third")
+    with client(portal) as browser:
+        for target in ("second", "third", "second"):
+            assert browser.submit(member, "select", target).status_code == 303
+            assert accounts.account_for("third") == target
+    for person in before:
+        after = accounts.control(person).read()
+        for field in ("epoch", "state", "generation", "provider_email", "shares"):
+            assert after[field] == before[person][field]
+
+
+def test_selection_cannot_target_the_default_account_or_accept_forged_grants(configured):
+    accounts, _, auth, portal = configured
+    member = cookie(auth, "third")
+    with client(portal) as browser:
+        browser.get("/connections/", headers=member)
+        browser.submit(cookie(auth), "share", "third")
+        offered = next(
+            fields
+            for action, fields in forms(browser.get("/connections/", headers=member).text)
+            if action.endswith("/select")
+        )
+        for target, grant in (
+            ("default", "own"),
+            ("second", "own"),
+            ("second", "x" * 32),
+            ("second", "x" * 1025),
+            ("../second", "own"),
+        ):
+            forged = {**offered, "person": target, "grant": grant}
+            assert browser.post("/connections/select", headers=member, data=forged).status_code == 409
+        assert accounts.account_for("third") == "third"
+        assert browser.post("/connections/select", data=offered).status_code == 403
+        assert (
+            browser.post("/connections/select", headers={"Cookie": member["Cookie"]}, data=offered).status_code == 403
+        )
+
+
+@pytest.mark.parametrize("damaged", ["second", "unrelated"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_unavailable_records_preserve_healthy_choices_and_owner_management(configured, damaged, missing):
+    accounts, _, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    connect(accounts, "fourth", "fourth@example.com", "fourth-session")
+    accounts.person("unrelated")
+    accounts.share("second", "third", *control_of(accounts, "second"))
+    accounts.share("fourth", "third", *control_of(accounts, "fourth"))
+    accounts.share("third", "second", *control_of(accounts, "third"))
+    choose(accounts, "third", "second")
+    control_path = accounts.directory / damaged / "connection.json"
+    if missing:
+        control_path.unlink()
+    else:
+        control_path.write_text("damaged")
+    member = cookie(auth, "third")
+    with client(portal) as browser:
+        page = browser.get("/connections/", headers=member)
+        assert page.status_code == 200 and "administrator’s attention" in page.text
+        assert "Use my account" in page.text and "Disconnect" in page.text and "Stop sharing" in page.text
+        assert any(action.endswith("/select") and fields["person"] == "fourth" for action, fields in forms(page.text))
+        if damaged == "second":
+            with pytest.raises(HktvError, match="session_source_missing"):
+                accounts.account_for("third")
+        else:
+            assert accounts.account_for("third") == "second"
+        assert browser.submit(member, "select", "fourth").status_code == 303
+        assert accounts.account_for("third") == "fourth"
+        assert browser.submit(member, "select", "third").status_code == 303
+        assert accounts.account_for("third") == "third"
+        assert browser.submit(member, "unshare", "second").status_code == 303
+        assert accounts.control("third").read()["shares"] == {}
+        assert browser.submit(member, "disconnect").status_code == 303
+        assert accounts.control("third").read()["state"] == "disconnected"
+    assert not control_path.exists() if missing else control_path.read_text() == "damaged"
+
+
+@pytest.mark.parametrize("switch_first", [False, True])
+def test_leaving_after_scope_change_clears_stale_selection_but_preserves_another_choice(configured, switch_first):
+    accounts, _, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    owner, member = cookie(auth), cookie(auth, "third")
+    with client(portal) as browser:
+        browser.submit(owner, "share", "third")
+        browser.submit(member, "select", "second")
+        old_leave = next(
+            fields
+            for action, fields in forms(browser.get("/connections/", headers=member).text)
+            if action.endswith("/leave")
+        )
+        browser.submit(owner, "share", "third", extra={"history": "1"})
+        before = accounts.control("third").read()
+        assert browser.post("/connections/leave", headers=member, data=old_leave).status_code == 409
+        assert accounts.control("third").read() == before
+        leave = next(
+            fields
+            for action, fields in forms(browser.get("/connections/", headers=member).text)
+            if action.endswith("/leave")
+        )
+        if switch_first:
+            browser.submit(member, "select", "third")
+        before = accounts.control("third").read()
+        assert browser.post("/connections/leave", headers=member, data=leave).status_code == 303
+        assert accounts.control("second").read()["shares"] == {}
+        after = accounts.control("third").read()
+        if switch_first:
+            assert after == before and accounts.account_for("third") == "third"
+        else:
+            assert after["selection"] is None and after["selection_revision"] != before["selection_revision"]
+            with pytest.raises(HktvError, match="account_selection_needed"):
+                accounts.account_for("third")
 
 
 def test_every_viewer_route_denies_wrong_owner_bearer_and_forwarded_identity(configured):
@@ -333,6 +505,7 @@ def test_disconnect_preserves_record_budgets_identity_sharing_and_generation_but
     with client(portal) as browser:
         browser.get("/connections/", headers=cookie(auth, "third"))
         browser.submit(cookie(auth), "share", "third")
+        browser.submit(cookie(auth, "third"), "select", "second")
         assert browser.post("/connections/start", headers=cookie(auth)).status_code == 303
         assert browser.post("/connections/disconnect", headers=cookie(auth)).status_code == 303
     record = accounts.control(account).read()
@@ -458,6 +631,9 @@ def test_missing_shared_control_mount_refuses_configuration(settings, tmp_path):
 )
 def test_corrupt_control_state_never_reactivates_cached_account_access(configured, raw):
     accounts, account, _, _ = configured
+    accounts.person("third")
+    accounts.share(account, "third", *control_of(accounts, account))
+    choose(accounts, "third", account)
     cached = accounts.get(account)
     control = accounts.control(account)
     if raw.startswith('{"shared_with"'):
@@ -471,7 +647,7 @@ def test_corrupt_control_state_never_reactivates_cached_account_access(configure
         cached.session.checkout_client()
     accounts.person("third")
     with pytest.raises(HktvError, match="session_source_missing"):
-        accounts.resolve(BEARER_CLIENT, person="third")  # it might be the record that shares with them: no fallback
+        accounts.resolve(BEARER_CLIENT, person="third")  # selected owner controls are unavailable: no fallback
 
 
 def test_stale_owner_forms_and_cancel_cannot_mutate_new_attempt_or_credentials(configured):
@@ -517,7 +693,7 @@ def test_owner_forms_require_captured_epoch_and_state(configured):
     with client(portal) as browser:
         browser.get("/connections/", headers=cookie(auth))  # records the display name
         before = accounts.control(account).read()
-        for action in ("start", "disconnect", "share", "unshare", "leave"):
+        for action in ("start", "disconnect", "share", "unshare", "leave", "select"):
             assert (
                 browser.post(
                     "/connections/" + action, headers=cookie(auth), data={"epoch": before["epoch"]}
@@ -534,7 +710,7 @@ def test_signed_out_home_goes_straight_to_sign_in_and_owner_links_open_the_windo
         assert home.status_code == 303 and home.headers["location"].endswith("/connections/login")
         browser.post("/connections/start", headers=cookie(auth))  # pins the owner
         mismatch = browser.get("/connections/", headers=cookie(auth, subject="another-subject"))
-        assert mismatch.status_code == 200 and "cannot manage this HKTVmall record" in mismatch.text
+        assert mismatch.status_code == 200 and "cannot manage this HKTVmall connection" in mismatch.text
         assert 'action="/connections/logout"' in mismatch.text
         made = browser.post("/connections/start", headers=cookie(auth), follow_redirects=False)
         attempt = browser.get(urlsplit(made.headers["location"]).path, headers=cookie(auth))

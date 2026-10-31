@@ -7,7 +7,8 @@ headless Chromium. A second owner is denied access. The owner puts text on the c
 arrived in the remote field, typed. Clipboard *reading* is not granted to the page, so the text can only have come
 from the browser's own paste event. Closing the page retains a resumable window; explicit cancellation closes it. The
 completed sign-in is saved; the owner shares the connection with a second person, whose MCP calls then use it until
-they stop using it on their own page; disconnect survives a restart.
+they select it on their own page. Mobile/keyboard switching, revocation, regrant and leaving never fall back to
+their retained own connection; disconnect survives a restart.
 
 Needs Xvfb, x11vnc, patchright's Chromium and noVNC's files (the login image has them all):
 
@@ -228,7 +229,7 @@ async def main() -> int:
         await page.goto(base + "/connections/")
         await page.get_by_role("link", name="Continue sign-in", exact=True).click()
         await page.wait_for_selector("iframe")
-        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await page.get_by_role("button", name="Cancel sign-in", exact=True).click()
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
             if not open_windows(windows):
                 break
@@ -259,7 +260,7 @@ async def main() -> int:
         assert saved.exists(), "page closure lost the completed sign-in"
         page = await context.new_page()
         await page.goto(base + "/connections/")
-        await page.get_by_role("status").filter(has_text="Connected").wait_for()
+        await page.get_by_text("Connection saved ·", exact=False).wait_for()
         print("completed session survived page closure")
 
         async def connection(person):
@@ -281,23 +282,91 @@ async def main() -> int:
                 },
             )
             result = (await reply.json())["result"]
-            return (result.get("structuredContent") or json.loads(result["content"][0]["text"]))["connection"]
+            payload = result.get("structuredContent") or json.loads(result["content"][0]["text"])
+            return payload.get("connection") or payload["error"]
 
-        assert await connection("first") == {"owner": "first", "shared": False}  # nothing shared by default
+        # A recipient who already connected their own account can still choose the offered household basket.
+        first_epoch = accounts.control("first").require_active()
+        accounts.adopt_owned(
+            "first",
+            first_epoch,
+            "first@example.com",
+            [
+                {
+                    "name": "JSESSIONID",
+                    "value": "first-session",
+                    "domain": "www.hktvmall.com",
+                    "path": "/",
+                    "secure": True,
+                    "expires": None,
+                }
+            ],
+            "Synthetic Browser",
+        )
+        assert await connection("first") == {"owner": "first", "shared": False}
         await page.reload()
         await page.get_by_role("button", name="Share", exact=True).click()
         await page.get_by_text("✓ Example One").wait_for()
-        assert await connection("first") == {"owner": "second", "shared": True}
+        assert await connection("first") == {"owner": "first", "shared": False}  # an offer never routes calls
+        await wrong.set_viewport_size({"width": 360, "height": 800})
         await wrong.goto(base + "/connections/")
-        await wrong.get_by_text("Using Example One's HKTVmall account.").wait_for()
-        assert await wrong.get_by_role("button", name="Disconnect", exact=True).count() == 0
-        await wrong.get_by_role("button", name="Stop using", exact=True).click()
-        await wrong.get_by_text("No HKTVmall account connected yet").wait_for()
+        await wrong.get_by_text("Order history is not shared.", exact=False).wait_for()
+        use_shared = wrong.get_by_role("button", name="Use Example One's account", exact=True)
+        await use_shared.focus()
+        await wrong.keyboard.press("Enter")
+        await wrong.get_by_text("Using Example One's HKTVmall account.", exact=True).wait_for()
+        assert await connection("first") == {"owner": "second", "shared": True}
+        assert await wrong.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        artifacts = os.environ.get("HKTVMALL_E2E_ARTIFACTS")
+        if artifacts:
+            folder = Path(artifacts)
+            folder.mkdir(parents=True, exist_ok=True)
+            await wrong.screenshot(path=str(folder / "account-selection-mobile.png"), full_page=True)
+        await wrong.get_by_text("Disconnect my account", exact=True).click()
+        await wrong.get_by_role("button", name="Disconnect", exact=True).click()
+        await wrong.get_by_text("Disconnected", exact=False).wait_for()
+        assert await connection("first") == {"owner": "second", "shared": True}
+        assert not (accounts.directory / "first" / "session.bin").exists()
+        # Renewing the owned slot does not select it over the shared one.
+        first_epoch = accounts.control("first").resume()
+        accounts.adopt_owned(
+            "first",
+            first_epoch,
+            "first@example.com",
+            [
+                {
+                    "name": "JSESSIONID",
+                    "value": "first-reconnected",
+                    "domain": "www.hktvmall.com",
+                    "path": "/",
+                    "secure": True,
+                    "expires": None,
+                }
+            ],
+            "Synthetic Browser",
+        )
+        await wrong.reload()
+        assert await connection("first") == {"owner": "second", "shared": True}
+        await wrong.get_by_role("button", name="Use my account", exact=True).click()
         assert await connection("first") == {"owner": "first", "shared": False}
-        print("the owner shared from the page; the member used the household account, then stopped using it")
+        await wrong.get_by_role("button", name="Use Example One's account", exact=True).click()
+        await page.get_by_role("button", name="Stop sharing", exact=True).click()
+        assert (await connection("first"))["code"] == "shared_access_removed"
+        await wrong.reload()
+        await wrong.get_by_text("was removed or changed", exact=False).wait_for()
+        await page.get_by_role("button", name="Share", exact=True).click()
+        assert (await connection("first"))["code"] == "shared_access_removed"  # regrant needs a new choice
+        await wrong.reload()
+        await wrong.get_by_role("button", name="Use Example One's account", exact=True).click()
+        await wrong.get_by_role("button", name="Leave shared account", exact=True).click()
+        await wrong.get_by_text("No account selected.", exact=False).wait_for()
+        assert (await connection("first"))["code"] == "account_selection_needed"
+        assert (accounts.directory / "first" / "session.bin").exists()  # no fallback; credentials retained
+        print("mobile/keyboard account choice, owned disconnect/reconnect, revocation, regrant and leave passed")
         await page.reload()
+        await page.get_by_text("Disconnect my account", exact=True).click()
         await page.get_by_role("button", name="Disconnect", exact=True).click()
-        await page.get_by_text("Server access stopped", exact=True).wait_for()
+        await page.get_by_text("Disconnected", exact=False).wait_for()
         assert not saved.exists()
         restarted = build_accounts(settings)
         assert restarted.control("second").read()["state"] == "disconnected"

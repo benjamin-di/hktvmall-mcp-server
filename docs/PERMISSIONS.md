@@ -6,7 +6,7 @@
 | --- | --- |
 | My connections (browser) | OIDC authorization-code flow with PKCE, exact issuer/client/callback, required signed group and the administrator-controlled person claim. It authenticates a person managing their own connection and whom they share it with. |
 | MCP gateway | Independently validates a human or workload token, its issuer, intended audience/resource, required scopes and service grants. Group membership and a workload's configured owner and service/tool ceiling limit routing. A workload cannot choose another person through a request argument. |
-| Private backend | An independent backend bearer and the gateway-set person header select the person; the server picks their own connection or the one shared with them. Strip caller-supplied identity headers. Backend credentials are neither browser sessions nor workload tokens; keep them private. |
+| Private backend | An independent backend bearer and the gateway-set person header select the person; the server resolves their saved account selection and verifies its grant. Strip caller-supplied identity headers. Backend credentials are neither browser sessions nor workload tokens; keep them private. |
 | Provider | The connected HKTVmall session authorizes actions at HKTVmall. Possession of it does not authorize an MCP caller. |
 
 Browser login, provider sign-in and sharing grant no agent permissions: the gateway still decides who may call.
@@ -27,29 +27,72 @@ they share with, display name) beside their sealed session, budget and order cac
 assigns accounts. A folder without its control record refuses and is never recreated around stored state.
 
 A connection belongs to the person who signed in to HKTVmall. Only they connect, reconnect, disconnect or share it.
-The first explicit Connect, Disconnect or Share pins their issuer and immutable subject; status reads never do, and a
-changed claim cannot transfer a record. The first HKTVmall account a person connects stays theirs (a reconnect must
-match it), and an HKTVmall account another person already connected is refused, so nobody signs in to someone
-else's account.
+The first explicit connection, selection or sharing action pins their issuer and immutable subject; status reads
+never do, and a changed claim cannot transfer a record. The first HKTVmall account a person connects stays theirs
+(a reconnect must match it), and an HKTVmall account another person already connected is refused. Switching the
+selected connection never changes either binding.
 
-The owner may share their connection with other people who have records. Members' assistants then use the owner's
-basket and order history; members never see the password and cannot reconnect, disconnect or share it. Sharing
-starts empty, needs the owner's fresh authentication, and is refused for someone who has their own connection or
-already uses another person's. A person uses at most one account: their own, or the one shared with them. Calls
-never fall back to another account; a disconnected or expired shared connection gives members `owner_reconnect`
-naming the owner. Unsharing, a member's Stop using and the owner's Disconnect apply from the next call; admitted calls
-may finish. Display names come from the identity provider at the person's latest Connections sign-in and are for
-display only.
+Ownership, offered access and selection are independent. Each person owns at most one provider connection and
+selects one shopping account, their own or one explicitly shared with them. They can receive several offers. Sharing
+starts empty and needs the owner's fresh authentication. It does not change the recipient's selection; only an
+explicit recipient action does. Shared members cannot manage the owner's connection, but can independently connect,
+reconnect, disconnect and share their own slot.
 
-On My connections, the owner manages **Shared with**, including during a reconnect. Recipients first open My
-connections with their own identity-provider login (or make an admitted MCP call) to appear in the list; they do
-not connect an HKTVmall account first. The list shows person IDs beside display names to distinguish namesakes.
-Members see whose account they use and **Stop using**, rather than the owner's sharing controls. See the
-[sharing steps](../README.md#hosting-several-people).
+New shares permit basket access with order history off by default. The owner can enable history explicitly; the
+recipient sees the scope before choosing the account. `hktv_recent_orders` checks this permission before reaching
+provider or cached order data. `hktv_status(check=true)` also requires it on shared connections because the deep
+canary probes order history; ordinary status reads do not. Grant revisions change on permission updates and reissues,
+requiring a new choice.
+Display names come from the identity provider and are for display only; person IDs distinguish namesakes.
 
-Disconnect persists its barrier, cancels windows and deletes the sealed session; the record, its sharing, budgets,
-caches and generation floor stay. Reconnect advances the epoch and keeps the provider binding. It does not revoke the
-provider everywhere. The login window's host and its operator can see what a person types there.
+On My connections, **Shared with** always manages the person's own slot, even while they use a shared account.
+Recipients first visit My connections or make an admitted MCP call to appear in the roster. They choose an offered
+account under **Shared accounts available to me** without provider login. **Use my account** changes only selection;
+the other connection's login, basket, members and caches are untouched. **Leave shared account** removes that grant
+and clears its selection; leaving an unselected offer preserves the current selection.
+This also clears a selection whose history permission revision has changed. An unreadable record does not hide
+healthy account choices or ownership and revocation controls; affected shared accounts remain unavailable and the
+page asks for administrator attention. It never repairs retained controls or switches accounts automatically.
+
+Disconnect persists its barrier, cancels windows and deletes the owned sealed session; the record, provider binding,
+sharing, budgets, caches and generation floor stay. It stops this connection for everyone using it, and the UI
+explains the affected members before submission. It does not alter the owner's selection of another person's shared
+account. Reconnect advances the connection epoch and preserves selection and grants. The login window's host and its
+operator can see what a person types there.
+
+There is no fallback after expiry, disconnect, revocation or leaving. A disconnected or expired selected shared
+connection gives `owner_reconnect`; removed or changed access gives `shared_access_removed`. A reissued grant never
+reactivates an old selection. An empty selection gives `account_selection_needed`, even if the person retains an
+owned login. A new person's initial selection is their own unsigned-in slot, so they can search before connecting.
+
+Each tool call captures its selected account and authorization at admission, before any provider or cache access.
+Previously admitted calls may finish on that captured account. A basket result carries an opaque MAC context bound
+to the person, selected account, selection revision, connection epoch and sharing grant. Basket writes require a
+matching context. A switch away and back still changes the selection revision; stale writes fail before any
+provider request. Contexts do not choose an account, carry cookies or authorize bypassing admission. They expire on
+selection/grant/epoch changes, not a wall-clock timer. They are not basket-content revisions or approval tokens.
+
+## Shared selection library
+
+`account-connections` owns the pure offer, selection, capability and revocation
+rules and escaped native selection controls. This application keeps its existing
+version-2 people records, identity/provider bindings, basket contexts, session
+generations and lifecycle barriers. Adopting the library requires no record rewrite
+or credential migration. Public error codes and history scope remain unchanged.
+
+## Upgrading hosted controls
+
+On first authenticated contact, version-1 people controls migrate under the people lock to strict version 2. Existing
+routing, including disconnected owned selections, is preserved; existing shares retain their documented full history
+scope. Credentials, identity bindings, epochs, generations, budgets and caches are preserved. Atomic writes and stable
+legacy grant revisions let an interrupted migration resume. An unreadable retained control is never recreated.
+The default single-account controls stay at version 1.
+
+Quiesce hosted traffic and replace all people-mode readers and browser writers with a version supporting selection
+before admitting new traffic. Earlier versions reject the new control schema. **An older image is not a compatible
+rollback after migration.** Recover or fix forward with version-2-aware code. Do not erase selection fields, revert
+controls independently of their sessions, or restore a backup that revives revoked grants. Account replacement and
+control-schema downgrades are not part of this feature.
 
 ## Single-account servers
 
