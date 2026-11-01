@@ -6,7 +6,7 @@ image challenge it may open, solved through the bounded visual solver; the
 driver never requests a second code, writes a basket, or changes account
 settings. Only positive signed-out evidence can request a new login; a warm
 snapshot proves the account as well as liveness.
-The password POST's own response decides the next step: the observed
+The password POST's own response decides the next step: the
 ``2FA_REQUIRED`` answer continues to the emailed code, a redirect back to the
 login page is a rejected credential, and a redirect elsewhere on the shop ends
 the sign-in, which the keeper's independent warm-up must then prove.
@@ -210,10 +210,9 @@ class HktvmallTargetBrowser:
             return
         if parts.path == OTP_REQUEST_PATH and response.request.method != "POST":
             return
-        # "unreadable" is defensive: Chromium drops a response body once its
-        # page navigates. The live verify answer was read before the site
-        # navigated, but a faster redirect must not turn a working code into a
-        # hold. A body that was read and is not a success JSON is a rejection.
+        # Navigation can discard a response body. Treat an unreadable body as
+        # uncertain rather than rejection; a readable non-success body rejects.
+        # A redirect alone must not turn a potentially valid code into a hold.
         status = "rejected"
         delivery_method = "unknown"
         try:
@@ -268,8 +267,8 @@ class HktvmallTargetBrowser:
     def _observe_login(self, response: Any) -> None:
         """Reduce the password POST's answer to one closed status.
 
-        Only ``2FA_REQUIRED`` has been observed live. A rejected password and
-        a direct success follow Spring Security's redirect convention.
+        Handle ``2FA_REQUIRED`` explicitly. Classify rejected credentials and
+        direct completion by their redirects; unknown responses remain held.
         """
 
         status = "unrecognised"

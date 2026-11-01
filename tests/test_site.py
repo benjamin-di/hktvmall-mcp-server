@@ -251,8 +251,8 @@ def _basket(lines):
 
 
 def test_a_sign_out_during_an_update_never_reads_a_guest_basket_back():
-    # The independent 0.5.0 audit: remove -> 401 -> re-mint -> home says signed out -> the read-back used to
-    # re-mint a guest token and report the removal "applied" on an empty guest basket.
+    # Synthetic sign-out during removal must not re-mint a guest token or
+    # report success from an empty guest basket.
     from contextlib import contextmanager
 
     from hktvmall_mcp import cart

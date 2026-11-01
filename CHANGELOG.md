@@ -3,6 +3,39 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.15.6] - 2026-11-01
+
+_Enforce patched authentication and MCP dependencies for pip installations._
+
+### Security
+
+- Enforce the patched dependency minima in published package requirements, including ordinary pip upgrades (#3).
+- Prevent unauthorized access to transformed components and potential OAuth client-secret disclosure in affected MCP client wrappers by updating FastMCP to 4.1.2 (GHSA-7xgj-8392-5q4r, GHSA-vqqp-x5qm-5qp4; 6bae6cd).
+- Reject oversized signed tokens before allocating their segments to prevent memory exhaustion by updating joserfc to 1.7.6 (GHSA-9pg5-8c7x-5hfx; 6bae6cd).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.15.5. Versions before 0.15.5 retain the security advisories.
+
+[0.15.6]: https://github.com/benjamin-di/hktvmall-mcp-server/releases/tag/v0.15.6
+
+## [0.15.5] - 2026-11-01
+
+_Security: upgrade from 0.15.4 for patched authentication and MCP dependencies._
+
+### Security
+
+- Prevent unauthorized access to transformed components and potential OAuth client-secret disclosure in affected MCP client wrappers by updating FastMCP to 4.1.2 (GHSA-7xgj-8392-5q4r, GHSA-vqqp-x5qm-5qp4; 6bae6cd).
+- Reject oversized signed tokens before allocating their segments to prevent memory exhaustion by updating joserfc to 1.7.6 (GHSA-9pg5-8c7x-5hfx; 6bae6cd).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.15.4; older dependencies retain the security advisories.
+
+[0.15.5]: https://github.com/benjamin-di/hktvmall-mcp-server/releases/tag/v0.15.5
+
 ## [0.15.4] - 2026-10-31
 
 _No changes to the published package._

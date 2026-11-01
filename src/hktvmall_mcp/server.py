@@ -56,7 +56,7 @@ CANARY_TTL, CANARY_RETRY = 55 * 60, 5 * 60
 # reviews, checkout warnings), so a change on HKTVmall's side alerts before an agent meets it.
 DEEP_TTL, DEEP_RETRY = 24 * 3600, 30 * 60
 REVIEW_PROBE = "H0888001_S_10007711"  # a long-listed supermarket item; no reviews (204) still parses as ok
-MAX_HITS = 100  # products per search call: 25 x 10 hits was ~133 KB (~33k tokens) for an agent
+MAX_HITS = 100  # bound the number of products and total response size per search call
 # The keep-alive thread looks every minute so a restart or a newer session file is proven signed in
 # at once (status reports unverified sessions as signed_in false); a failed attempt waits 15 min.
 KEEPALIVE_POLL, KEEPALIVE_RETRY = 60, 15 * 60
@@ -64,11 +64,9 @@ SUMMARY_CHARS = 300
 # The product cards (MCP Apps): claude.ai and ChatGPT draw hktv_show_products' result with this page in a sandboxed
 # frame. It loads photos from HKTVmall's CDNs and connects nowhere; links open through the host (ui/open-link).
 CARDS_URI = "ui://hktvmall/products.html"
-# Exact hosts and no empty lists: claude.ai did not fetch the view while its CSP had wildcard hosts and an empty
-# connectDomains (0.8.0/0.8.1); it renders views whose CSP lists exact origins.
+# Declare exact resource origins and omit unused CSP lists for MCP Apps client compatibility.
 CARDS_CSP = {"resourceDomains": [f"https://{h}" for h in links.IMAGE_HOSTS]}
-# Tool and resource lists change only on deploy: clients on MCP 2026-07-28 may cache them for 10 minutes, so a
-# deploy reaches claude.ai within minutes instead of at its next full reload, hours later.
+# Bound MCP tool/resource discovery cache age so clients can discover updated metadata.
 LIST_CACHE_TTL = 600
 # Each card's photo gallery travels in the result's _meta: the view reads it, the model is not sent it.
 PHOTOS_META = "hktvmall/photos"
@@ -86,7 +84,7 @@ MORE_TO_READ = (
     "Stopped after reading {n} order pages not read before (about 2 s each); continue from next_offset. Orders "
     "already read come back at once, so the next pass through the history is quick."
 )
-# HKTVmall's own labels for deliveryLabelCode, as embedded in every product page (2026-10-19).
+# HKTVmall's product-page labels for deliveryLabelCode.
 DELIVERY_LABELS = {
     "standard-same-day": "8-Hour Delivery",
     "standard-express": "Next Day Delivery",
@@ -114,7 +112,7 @@ HTTP_OPTIONS: dict[str, Any] = {
     "host_origin_protection": False,
 }
 
-# No access log: health checks every few seconds drowned the tool lines, and request lines add nothing they lack.
+# Keep tool diagnostics readable by omitting redundant per-request access logging.
 UVICORN: dict[str, Any] = {"access_log": False}
 
 INSTRUCTIONS = """\
@@ -357,8 +355,7 @@ class HktvService:
                 prods = [p for p in prods if p.get("price") and p["price"]["cents"] <= q.max_price_cents]
             out.append({"q": q.q, "total": r["total"], "widened": r.get("widened", False), "products": prods})
         if not any(r["total"] for r in out) and not self.site.search_works():
-            # Search has answered success with no hits for every query for minutes at a time. An all-empty answer
-            # is believed only if a probe query has hits.
+            # Trust an all-empty result only when the independent probe query has hits.
             log.warning("search: all %d queries came back empty and so did the probe", len(out))
             return SearchResult(results=out, notes=[{"code": "search_empty", "text": EMPTY_SEARCH}])
         if per_query < requested:

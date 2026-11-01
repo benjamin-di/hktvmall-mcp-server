@@ -57,8 +57,10 @@ def in_stock(product: dict[str, Any] | None) -> bool:
 
 
 def store_closed(product: dict[str, Any] | None) -> bool:
-    """The seller's shop is temporarily closed (a holiday): HKTVmall answers an add with success and drops
-    it (observed 2026-10-19), while the search index still shows the item in stock."""
+    """Detect a temporary seller closure independently of the indexed stock value.
+
+    An add response can report success without retaining an item from a closed shop.
+    """
     return bool(product) and product.get("storeClosedStatus") == 1
 
 

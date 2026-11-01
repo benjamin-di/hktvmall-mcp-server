@@ -23,7 +23,7 @@ ITEM_KEYS = frozenset({"id", "title", "quantity", "line_total", "free_gift", "st
 
 class ItemCache:
     """Completed orders' items, kept as ``orders.json`` beside the account's state: a completed order never changes,
-    so its ~2 MB page (1.5-2 s) is read once rather than after every restart. It holds only what a tool result shows
+    so its potentially large page is read once rather than after every restart. It holds only what a tool result shows
     (``item``'s keys) and goes with the account's directory when the account is disconnected."""
 
     def __init__(self, path: Path, limit: int = 1000) -> None:

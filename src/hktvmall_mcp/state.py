@@ -21,9 +21,8 @@ from .fsio import atomic_write_json, file_key, locked
 log = logging.getLogger(__name__)
 
 HKT = timezone(timedelta(hours=8), "HKT")  # no daylight saving: no tz database needed
-# A first pushback pauses briefly; another within PUSHBACK_MEMORY pauses for long. A single 403 during a 30 s
-# HKTVmall hiccup (the page answered normally a minute later) once paused everything for 30 minutes, while real
-# blocking repeats and still meets the long pause on its second sign.
+# Pause briefly after the first pushback to absorb a transient refusal. A second pushback within
+# PUSHBACK_MEMORY escalates to the longer pause for repeated blocking.
 FIRST_PAUSE, BLOCK_PAUSE, PUSHBACK_MEMORY = 5 * 60, 30 * 60, 2 * 3600
 # Failures a successful keep-alive disproves: it verified the sign-in and read the basket.
 SESSION_CODES = frozenset(

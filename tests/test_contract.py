@@ -88,7 +88,7 @@ def test_search_hits_label_delivery_and_closed_shops():
 
 
 def test_products_link_to_hktvmalls_own_page_and_photo():
-    # Links were once built from a template (/hktv/en/p/{id}): a redirect on the web, unknown to HKTVmall's app.
+    # Use the canonical product link; a redirecting template may not open in the provider's app.
     for hit in load("search_hits.json"):
         lean, full = server.product(hit), server.product(hit, details=True)
         assert lean["url"] == "https://www.hktvmall.com/hktv/en/" + hit["urlEn"] and lean["url"].endswith(hit["code"])
@@ -238,8 +238,7 @@ def test_sample_reviews_are_newest_first_and_entities_are_unescaped():
 
 
 def test_requests_copy_hktvmalls_own_client():
-    # Each request shape below was read from HKTVmall's own web client (docs/hktvmall-site.md); a guess is
-    # how reviews came to skip the newest page, so every shape is pinned here.
+    # Pin the provider request contract, including the newest review page, using synthetic fixtures.
     from urllib.parse import parse_qs, urlsplit
 
     zone_raw = (FIXTURES / "checkout_addresses.json").read_text(encoding="utf-8")
@@ -401,7 +400,7 @@ def test_basket_survives_unreadable_checkout_warnings(service, site):
 
 
 def test_fakes_match_fixture_shapes():
-    # The fakes once invented a stockLevel that HKTVmall's search hits never carry, which hid a dead code path.
+    # Synthetic fakes must not invent fields absent from the supported search-hit shape.
     from conftest import product
 
     def keys(o, p=""):
@@ -415,7 +414,7 @@ def test_fakes_match_fixture_shapes():
 
 
 def test_one_field_name_one_shape_across_tool_outputs(service, site, clock):
-    # "unit_price" once meant the item price in the basket and a per-100ml price in search.
+    # The same field name must preserve its units across synthetic tool responses.
     from conftest import product
     from tests_support import publish_snapshot
 

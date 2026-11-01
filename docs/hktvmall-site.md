@@ -1,7 +1,7 @@
 # HKTVmall's endpoints: what is known
 
 HKTVmall has no public API. This server uses the endpoints HKTVmall's website itself calls, and this page records
-what has been observed about them (October 2026). `src/hktvmall_mcp/site.py` is the only module that sends
+their supported behavior. `src/hktvmall_mcp/site.py` is the only module that sends
 requests, and `site.PATHS` (pinned by `tests/test_safety.py`) lists every path it may reach. The fakes in
 `tests/conftest.py` reproduce the quirks below, so the tests never contact HKTVmall.
 
@@ -25,7 +25,7 @@ names the area, such as `orders_schema_changed`): compare with this page, fix `s
 - English search is weaker than Chinese ("firm tofu" finds tofu cat litter; 硬豆腐 finds tofu).
 - A price limit is `range: {"sellingPrice": "-19.9"}` (inclusive, decimals), as HKTVmall's own client sends it.
   Unknown request keys are ignored silently; there is no price-sorted index.
-- Search can fail silently: for minutes at a time it has answered `KWS-200` with no hits for every query. An
+- A `KWS-200` status alone does not prove search availability. An
   all-empty answer is believed only if a probe search for a common item has hits; otherwise search and products carry
   `notes: [{code: search_empty}]` and a basket change stops before writing anything (`upstream_error`).
 - A product missing from search can come back days later; `not_found` means "not sold right now".
@@ -93,16 +93,15 @@ names the area, such as `orders_schema_changed`): compare with this page, fix `s
 ## Pushback
 
 - A 429 from the shop or search, or a 403 on the home page or search, means HKTVmall is pushing back: everything
-  pauses for 5 minutes, or 30 when it happens again within two hours. A single 403 after a 30 s hang has been seen
-  on an otherwise healthy site.
+  pauses for 5 minutes, or 30 when it happens again within two hours. The short initial pause allows a transient
+  refusal to settle; repeated refusals trigger the longer pause.
 
 ## Clients and the product cards
 
 - `hktv_show_products` is linked to the MCP Apps view `ui://hktvmall/products.html` (`text/html;profile=mcp-app`).
-  claude.ai fetched the view only once its tool metadata carried `ui` alone and the CSP listed exact origins (no
-  wildcard hosts, no empty `connectDomains`); it re-reads resource lists only every few hours, so a `ttlMs` of 10
-  minutes on the lists lets a new release reach it sooner.
-- claude.ai on the web and on phones renders the cards; at the time of writing the Windows desktop app did not
-  declare the extension and showed the result as text.
+  Use the `ui` tool metadata, exact CSP resource origins and no unused `connectDomains` list for client
+  compatibility. A `ttlMs` of 10 minutes bounds discovery-cache age for updated tool and resource lists.
+- Clients declaring the MCP Apps extension can render the cards. Clients without the extension receive the
+  ordinary text result.
 - HKTVmall's iPhone app claims every hktvmall.com link (`apple-app-site-association` `"/": "*"`), so links open in the
   app when it is installed.

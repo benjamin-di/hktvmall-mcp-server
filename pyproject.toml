@@ -1,6 +1,6 @@
 [project]
 name = "hktvmall-mcp"
-version = "0.15.4"
+version = "0.15.6"
 description = "MCP server for HKTVmall (Hong Kong): search, product cards, order history and basket edits read back from HKTVmall; never pays"
 readme = "README.md"
 license = "MIT"
@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     # FastMCP 4 (MCP SDK 2): stdio, and stateless JSON over streamable HTTP.
-    "fastmcp==4.0.10",
+    "fastmcp==4.1.2",
     # AES-GCM for connected accounts' sessions at rest (already in the lock through FastMCP's auth stack).
     "cryptography>=50.0.0",
     # The per-user state folder for local use (already in the lock through FastMCP).
@@ -28,6 +28,16 @@ dependencies = [
     # The login window's service, its client and the paste add-on.
     "signin-window[automation,oidc]>=0.4.17,<0.5",
     "account-connections==0.1.1",
+    # Published security minima also protect ordinary pip upgrades.
+    "starlette>=1.3.1,<2",
+    "joserfc>=1.7.6",
+    "idna>=3.15",
+    "pydantic-settings>=2.14.2",
+    "pyjwt>=2.13.0",
+    "python-multipart>=0.0.31",
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0",
+    "fastmcp-slim>=4.1.2",
 ]
 
 [project.urls]
@@ -47,12 +57,14 @@ dev = ["pytest>=8", "ruff>=0.14"]
 constraint-dependencies = [
     "starlette>=1.3.1,<2",
     "cryptography>=50.0.0",
-    "joserfc>=1.6.8",
+    "joserfc>=1.7.6",
     "idna>=3.15",
     "pydantic-settings>=2.14.2",
     "pyjwt>=2.13.0",
     "python-multipart>=0.0.31",
-    "authlib>=1.7.1",
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0",
+    "fastmcp-slim>=4.1.2",
 ]
 
 

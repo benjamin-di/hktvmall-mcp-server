@@ -519,7 +519,7 @@ def _history(site, processing=1, completed=73):
 
 
 def test_the_whole_order_history_pages_back_with_offset(service, site):
-    # The tool once showed the 10 newest orders of a long history and no more.
+    # A synthetic long order history must remain pageable beyond its first batch.
     expected = _history(site)
     seen, offset = [], 0
     while offset is not None:

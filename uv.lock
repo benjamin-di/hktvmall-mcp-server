@@ -2,16 +2,19 @@ version = 1
 revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "python_full_version >= '3.15'",
+    "python_full_version == '3.14.*'",
     "python_full_version < '3.14'",
 ]
 
 [manifest]
 constraints = [
-    { name = "authlib", specifier = ">=1.7.1" },
+    { name = "authlib", specifier = ">=1.9.1" },
     { name = "cryptography", specifier = ">=50.0.0" },
+    { name = "dnspython", specifier = ">=2.9.0" },
+    { name = "fastmcp-slim", specifier = ">=4.1.2" },
     { name = "idna", specifier = ">=3.15" },
-    { name = "joserfc", specifier = ">=1.6.8" },
+    { name = "joserfc", specifier = ">=1.7.6" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pyjwt", specifier = ">=2.13.0" },
     { name = "python-multipart", specifier = ">=0.0.31" },
@@ -367,19 +370,19 @@ wheels = [
 
 [[package]]
 name = "fastmcp"
-version = "4.0.10"
+version = "4.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastmcp-slim", extra = ["client", "server"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/4e/8acec5837a5611b19b7d1ad0515f6ebac14ad526ac801f4d81de73a4e246/fastmcp-4.0.10.tar.gz", hash = "sha256:64539631a7dc5873a1c7a44089b2f7b3395dea3ca857e9f81bfe9665a59038d5", size = 42415441, upload-time = "2026-09-25T17:19:59.734Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/4d/06d37a333c3764ab300ad7ff84a30be33c9effffba624ea91f3944123656/fastmcp-4.1.2.tar.gz", hash = "sha256:1b70a8467ac4dd6416c7c101cd54562f089b55e6636a196b4a20bdac3ccb0284", size = 42736167, upload-time = "2026-10-20T14:01:37.982Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/04/897d9e48e653793a3e6ef5b8cb190bb194e0a8756d8051f6d7c214acba97/fastmcp-4.0.10-py3-none-any.whl", hash = "sha256:1f8462e3d97394a637e1b0f1eaea0002da661c8d98000ad43f0aa3fa1ff523e8", size = 8100, upload-time = "2026-09-25T17:19:56.6Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/64/0e708271721e001979ab5d91fc5e86bf4e74bff34dfb6c94ff83565945a3/fastmcp-4.1.2-py3-none-any.whl", hash = "sha256:3d5eddfe624b002ebcf202d5a55ff13bdce6925ce58bfcaeb28bc2e3bbee1830", size = 8151, upload-time = "2026-10-20T14:01:33.947Z" },
 ]
 
 [[package]]
 name = "fastmcp-slim"
-version = "4.0.10"
+version = "4.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp-types" },
@@ -390,14 +393,15 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/7b/ab66bdf56ac1741952b2b288166f0525ed63096958871b439ce2b6f58d4b/fastmcp_slim-4.0.10.tar.gz", hash = "sha256:d22b423f93ad945bf65d446a1689ff84be7b91dfd9b6f23c5013f4b2fe9776a7", size = 701806, upload-time = "2026-09-25T17:19:35.311Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/c9/f4d0a0a39c64f7647e61c591377468a3afee7a6786a354a405c7c44db2fb/fastmcp_slim-4.1.2.tar.gz", hash = "sha256:4b703ddbd35165ebf03b2cc560688f458f3fe4db11e635074fcc303496734154", size = 748928, upload-time = "2026-10-20T14:01:10.582Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/86/9f99555e7b41d123c9c9f5fa9697e713129e43240de66b475f2324930c4c/fastmcp_slim-4.0.10-py3-none-any.whl", hash = "sha256:c2abd40302b8f06b0291413cf537d57bc0f171b5fd98af5cfef3b2b6b506122f", size = 876165, upload-time = "2026-09-25T17:19:34.001Z" },
+    { url = "https://files.pythonhosted.org/packages/66/a1/12e7d2ac4d76ee82c4b5606bbe0732162e3c4367b4aba6884a6f4d183eb3/fastmcp_slim-4.1.2-py3-none-any.whl", hash = "sha256:58a4e547a0f85cfee2d2219677ed31c0f1c4911741a5c91a1ee5fbf69dde35fa", size = 930447, upload-time = "2026-10-20T14:01:08.667Z" },
 ]
 
 [package.optional-dependencies]
 client = [
     { name = "authlib" },
+    { name = "beartype", marker = "python_full_version >= '3.15'" },
     { name = "exceptiongroup" },
     { name = "httpx2" },
     { name = "mcp" },
@@ -407,6 +411,7 @@ client = [
 ]
 server = [
     { name = "authlib" },
+    { name = "beartype", marker = "python_full_version >= '3.15'" },
     { name = "cyclopts" },
     { name = "exceptiongroup" },
     { name = "griffelib" },
@@ -516,14 +521,23 @@ wheels = [
 
 [[package]]
 name = "hktvmall-mcp"
-version = "0.15.4"
+version = "0.15.6"
 source = { editable = "." }
 dependencies = [
     { name = "account-connections" },
+    { name = "authlib" },
     { name = "cryptography" },
+    { name = "dnspython" },
     { name = "fastmcp" },
+    { name = "fastmcp-slim" },
+    { name = "idna" },
+    { name = "joserfc" },
     { name = "platformdirs" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt" },
+    { name = "python-multipart" },
     { name = "signin-window", extra = ["automation", "oidc"] },
+    { name = "starlette" },
 ]
 
 [package.optional-dependencies]
@@ -540,11 +554,20 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "account-connections", specifier = "==0.1.1" },
+    { name = "authlib", specifier = ">=1.9.1" },
     { name = "cryptography", specifier = ">=50.0.0" },
-    { name = "fastmcp", specifier = "==4.0.10" },
+    { name = "dnspython", specifier = ">=2.9.0" },
+    { name = "fastmcp", specifier = "==4.1.2" },
+    { name = "fastmcp-slim", specifier = ">=4.1.2" },
+    { name = "idna", specifier = ">=3.15" },
+    { name = "joserfc", specifier = ">=1.7.6" },
     { name = "patchright", marker = "extra == 'login'", specifier = "==1.61.2" },
     { name = "platformdirs", specifier = ">=4.3" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
+    { name = "pyjwt", specifier = ">=2.13.0" },
+    { name = "python-multipart", specifier = ">=0.0.31" },
     { name = "signin-window", extras = ["automation", "oidc"], specifier = ">=0.4.17,<0.5" },
+    { name = "starlette", specifier = ">=1.3.1,<2" },
 ]
 provides-extras = ["login"]
 
@@ -655,14 +678,14 @@ wheels = [
 
 [[package]]
 name = "joserfc"
-version = "1.7.5"
+version = "1.7.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/94/80fea1514b7c6d7d37804d3fe9ca81455f633347fc98731bd71ffe1faa17/joserfc-1.7.5.tar.gz", hash = "sha256:d5ff536e658e17664f8c1b1ab60dc4aa62aa973fcef1edd33cc44bda45d6f5ea", size = 234990, upload-time = "2026-08-29T13:05:42.057Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/db/ec5b5fe07a7bda62cd2c2d619daf160eb7442b979c7cd61bbe0262108de9/joserfc-1.7.6.tar.gz", hash = "sha256:fb1cf6d2977318bef976c2ed2ef2167cc5f8ade8fc96f034e38f7abd656907c4", size = 236091, upload-time = "2026-10-18T23:12:18.43Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/c5/82addfd375e5ee6520644e0553e4aadde92d668c4fc99cc716d337fe7bb3/joserfc-1.7.5-py3-none-any.whl", hash = "sha256:add2c2c84e8373b084d526a8b53daba5d7a513a118cd2dcd9fc9f979d0922159", size = 71269, upload-time = "2026-08-29T13:05:40.718Z" },
+    { url = "https://files.pythonhosted.org/packages/98/40/63886ba742c6fd9e6dd222e20b8d54012fbc933465350c7747c4ed5b31e4/joserfc-1.7.6-py3-none-any.whl", hash = "sha256:e2d72e3fa937ed8ddd42ad8c1cc337a43e7ffd02efa572a2aa15e2764a05b506", size = 71588, upload-time = "2026-10-18T23:12:17.085Z" },
 ]
 
 [[package]]

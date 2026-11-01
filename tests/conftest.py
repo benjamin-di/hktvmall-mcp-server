@@ -33,7 +33,7 @@ def product(code: str, price: float = 10.0, stock: str = "inStock", name: str = 
 
 
 class Clock:
-    def __init__(self, now: float = 1_792_300_000.0) -> None:  # 2026-10-18
+    def __init__(self, now: float = 1_792_300_000.0) -> None:  # fixed synthetic clock
         self.now = now
 
     def __call__(self) -> float:

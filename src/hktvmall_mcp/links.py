@@ -5,8 +5,7 @@ Search hits carry ``urlEn`` (``main/<store>/s/<store code>/<categories>/<name>/p
 needs no redirect: the short ``/hktv/en/p/<id>`` form only works as a redirect on the web, and HKTVmall's iPhone
 app, which claims every hktvmall.com link (apple-app-site-association ``"/": "*"``), receives it as tapped.
 
-Photos are on HKTVmall's image CDNs (IMAGE_HOSTS: 2,293 of 2,295 gallery photos in 500 hits, 2026-10-21; the
-other host, hktv-img.hkmpcl.com.hk, answered 404). The server never fetches them; the person's browser does, inside
+Photos use the declared HKTVmall image CDNs. The server never fetches them; the person's browser does, inside
 the product cards, whose content security policy lists exactly these hosts.
 """
 
@@ -59,8 +58,7 @@ _FULL_SIZE = re.compile(r"_1200(\.(?:jpe?g|png|webp))$")
 
 
 def photos(gallery: Any, fallback: str | None = None) -> list[str]:
-    """A product's photos for its card, the primary one first, at 515 px: HKTVmall serves every gallery photo at
-    65, 96, 300, 515 and 1200 px (all four CDNs, 2026-10-21); 515 is sharp on a phone card at 30-65 KB a JPEG."""
+    """Return a bounded product gallery, primary photo first, using the 515 px card rendition."""
     rows = [g for g in gallery if isinstance(g, dict)] if isinstance(gallery, list) else []
     rows.sort(key=lambda g: g.get("imageType") != "PRIMARY")  # stable: the merchant's order after the primary
     out: list[str] = []

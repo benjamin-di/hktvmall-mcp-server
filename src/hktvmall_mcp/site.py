@@ -96,8 +96,8 @@ FIELDS = [
 # search hits do not need them and a gallery is ~1 KB per hit.
 LOOKUP_FIELDS = [*FIELDS, "baseProduct", "gallery"]
 MIN_INTERVAL, JITTER, QUEUE_WAIT = 0.35, 0.15, 30.0  # at most ~2 requests a second, one at a time
-# A call waits this long for the account's previous call: an order-history page reads up to ten order pages
-# (~20 s), and agents send several at once (with a 30 s wait, most of seven parallel calls failed busy).
+# Allow queued calls to wait behind an account's bounded order-page batch.
+# Serialization preserves account ordering without forcing callers to retry a busy batch.
 ACCOUNT_WAIT = 90.0
 MAX_BODY = 8 * 1024 * 1024
 TIMEOUT = 30
@@ -277,8 +277,10 @@ class Site:
         )
 
     def search_works(self) -> bool:
-        """Whether search answers at all: HKTVmall's search has returned success with no hits for every query
-        for minutes at a time (2026-10-19), so an all-empty answer is checked once before it is believed."""
+        """Check a known probe query before trusting an all-empty search response.
+
+        A successful status alone cannot distinguish an empty result from unavailable search.
+        """
         return bool(self.search([{"q": PROBE_QUERY, "zone": "supermarket", "limit": 1}])[0]["total"])
 
     @staticmethod
