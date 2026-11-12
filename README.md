@@ -291,6 +291,13 @@ not regular files and timestamps in the future are rejected. `session.json` uses
 
 ## Troubleshooting
 
+Product cards show the installed HKTVmall version and a shortened source revision in their footer; the full revision
+is available in the footer title. The native MCP handshake reports the same product version. Server, login service
+and maintenance diagnostics are JSON lines carrying `service`, `version`, the full `source_revision`, a process
+`instance`, `level` and `component`. These fields come from the installed artifact. Setting runtime `VERSION` or
+`VCS_REF` does not change them. Command results keep their existing format; MCP stdio uses stdout only for protocol
+messages and writes diagnostics to stderr.
+
 | Code | What to do |
 |---|---|
 | `account_selection_needed` | Open My connections and explicitly select your own or an available shared account. |

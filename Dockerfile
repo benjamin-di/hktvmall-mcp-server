@@ -23,8 +23,12 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
  && rm /tmp/requirements-runtime.lock
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE hatch_build.py ./
 COPY src ./src
+COPY scripts/embed-build-identity.py scripts/
+ARG VERSION
+ARG VCS_REF
+RUN python scripts/embed-build-identity.py "$VERSION" "$VCS_REF"
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     uv pip install --system --compile-bytecode --no-deps . \
  && rm -rf /app/src \

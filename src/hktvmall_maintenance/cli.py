@@ -6,7 +6,6 @@ paths, account identity, references and permission; no scheduler starts here.
 
 from __future__ import annotations
 
-import argparse
 import ctypes.util
 import hashlib
 import importlib
@@ -22,6 +21,7 @@ from signin_window.leases import LeaseKind, ordered_file_lease
 from signin_window.sessions import AttemptBudget
 
 from hktvmall_mcp.connections_state import ConnectionState
+from hktvmall_mcp.logs import SafeParser, setup
 
 from .browser import open_hktvmall_browser
 from .config import load_identity_target
@@ -132,7 +132,8 @@ def build_keeper(root: Path, export_dir: Path, expected_email: str, reference: s
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    setup()
+    parser = SafeParser(description=__doc__.split("\n")[0])
     parser.add_argument("action", choices=("keep", "status", "acknowledge"))
     parser.add_argument("--root", type=Path, default=Path(os.environ.get(PREFIX + "_ROOT", "/maintenance")))
     parser.add_argument("--export-dir", type=Path, default=os.environ.get(PREFIX + "_EXPORT_DIR"))

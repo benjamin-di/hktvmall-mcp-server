@@ -18,6 +18,9 @@ from typing import Any
 from signin_window.browser import policy_installed
 from signin_window.service import Window, Windows, build_app
 
+from hktvmall_mcp.logs import diagnostic, setup
+from hktvmall_mcp.ui import renderer_options
+
 from .window import sign_in
 
 log = logging.getLogger("hktvmall-login")
@@ -43,12 +46,24 @@ async def run_browser(window: Window) -> dict[str, Any]:
 
 
 def main() -> None:
+    setup()
+    try:
+        serve()
+    except (ValueError, OSError, OverflowError) as error:
+        diagnostic(
+            "Check HKTVMALL_LOGIN_SLOTS, HKTVMALL_LOGIN_MINUTES, PORT and browser service configuration "
+            f"({type(error).__name__})"
+        )
+        raise SystemExit(1) from None
+
+
+def serve() -> None:
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     token = (os.environ.get("HKTVMALL_LOGIN_TOKEN") or "").strip()
     if len(token) < 32:
-        raise SystemExit("HKTVMALL_LOGIN_TOKEN (at least 32 characters) is required")
+        diagnostic("HKTVMALL_LOGIN_TOKEN (at least 32 characters) is required")
+        raise SystemExit(1)
     if not policy_installed():
         log.error("the managed Chromium policy is not installed: sign-in windows stay closed")
     windows = Windows(
@@ -59,5 +74,5 @@ def main() -> None:
         x11vnc=os.environ.get("HKTVMALL_LOGIN_X11VNC") or "x11vnc",
     )
     novnc = Path(os.environ.get("HKTVMALL_LOGIN_NOVNC") or "/usr/share/novnc")
-    app = build_app(windows, token=token, novnc_dir=novnc, direct_view=False)
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT") or 8080), log_level="warning")  # noqa: S104
+    app = build_app(windows, token=token, novnc_dir=novnc, direct_view=False, **renderer_options(build_app))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT") or 8080), log_level="warning", log_config=None)  # noqa: S104

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import os
 import re
@@ -20,6 +19,8 @@ from signin_window.state import read_private_file
 from hktvmall_login.window import sign_in
 from hktvmall_mcp.connections_state import ConnectionState
 from hktvmall_mcp.errors import HktvError
+from hktvmall_mcp.logs import SafeParser, diagnostic, setup
+from hktvmall_mcp.ui import renderer_options
 
 from .cli import lease, stores
 from .cookies import select_export_cookies
@@ -175,7 +176,20 @@ def configured(env=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    setup(default_level="WARNING")
+    try:
+        return run(argv)
+    except (KeyError, ValueError, OSError, OverflowError) as error:
+        diagnostic(
+            "Check HKTVMALL_MAINTENANCE_ROOT, HKTVMALL_MAINTENANCE_EXPORT_DIR, "
+            "HKTVMALL_CONNECTIONS_CONTROLS_DIR, HKTVMALL_MAINTENANCE_EXPECTED_EMAIL "
+            f"and the private login configuration ({type(error).__name__})"
+        )
+        raise SystemExit(1) from None
+
+
+def run(argv=None):
+    parser = SafeParser(description=__doc__)
     parser.add_argument("--recover-only", action="store_true")
     args = parser.parse_args(argv)
     recovery = configured()
@@ -198,6 +212,7 @@ def main(argv=None):
         novnc_dir=Path(os.environ.get("HKTVMALL_LOGIN_NOVNC", "/usr/share/novnc")),
         direct_view=False,
         start_params=start_params,
+        **renderer_options(build_app),
     )
     import uvicorn
 
@@ -207,6 +222,7 @@ def main(argv=None):
         port=int(os.environ.get("HKTVMALL_DEFAULT_LOGIN_PORT", "8081")),
         log_level="warning",
         access_log=False,
+        log_config=None,
     )  # noqa: S104
 
 

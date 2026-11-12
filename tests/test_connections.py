@@ -135,11 +135,10 @@ def test_ui_reads_do_not_claim_a_connection_and_start_requires_fresh_owner_auth(
         assert browser.get("/connections/status").status_code == 401
         assert browser.get("/connections/status", headers=cookie(auth)).status_code == 200
         assert accounts.control(account).read()["owner"] is None
-        assert (
-            browser.post("/connections/start", headers=cookie(auth, fresh=False))
-            .headers["location"]
-            .endswith("reauth=1")
-        )
+        # A stale sign-in gets a page whose link starts step-up, never a redirect a browser would cancel.
+        confirm = browser.post("/connections/start", headers=cookie(auth, fresh=False))
+        assert confirm.status_code == 403 and "location" not in confirm.headers
+        assert 'href="/connections/login?reauth=1"' in confirm.text and "connect HKTVmall" in confirm.text
         assert accounts.control(account).read()["owner"] is None
         made = browser.post("/connections/start", headers=cookie(auth))
         assert made.status_code == 303
@@ -152,6 +151,8 @@ def test_first_visit_records_the_person_with_their_display_name_and_nothing_shar
     with client(portal) as browser:
         page = browser.get("/connections/", headers=cookie(auth, "newcomer", name="New <Comer>"))
     assert page.status_code == 200 and "No HKTVmall account connected yet" in page.text
+    assert "Signed in to Connections as New &lt;Comer&gt;" in page.text
+    assert "New <Comer>" not in page.text
     assert "Connect HKTVmall" in page.text and "ask them to share it" in page.text
     assert "newcomer" in accounts.known()
     record = accounts.control("newcomer").read()
@@ -170,7 +171,8 @@ def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(config
         assert "Shared with" in page and "Sam Member" in page and "cannot see your password" in page
         assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
         stale = cookie(auth, fresh=False, name="Alex Owner")
-        assert browser.submit(stale, "share", "third").headers["location"].endswith("reauth=1")
+        shared = browser.submit(stale, "share", "third")
+        assert shared.status_code == 403 and 'href="/connections/login?reauth=1"' in shared.text
         assert accounts.control("second").read().get("shared_with", []) == []
         assert browser.submit(owner, "share", "third").status_code == 303
         assert accounts.control("second").read()["shared_with"] == ["third"]
@@ -181,7 +183,10 @@ def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(config
         assert "Using Alex Owner's HKTVmall account." in member_page and "Leave shared account" in member_page
         for action in ("disconnect", "share", "unshare"):
             assert f'action="/connections/{action}"' not in member_page
-        assert "✓ Sam Member" in browser.get("/connections/", headers=owner).text
+        owner_page = browser.get("/connections/", headers=owner).text
+        assert "<strong>✓ Sam Member</strong>" in owner_page and "· Shared</span>" in owner_page
+        # The order-history checkbox sits outside the share form so the buttons share a row; form= keeps it bound.
+        assert 'form="share-third"' in owner_page and 'action="/connections/share" id="share-third"' in owner_page
         assert browser.submit(member, "leave", "second").status_code == 303
         assert accounts.control("second").read()["shared_with"] == []
         with pytest.raises(HktvError, match="account_selection_needed"):
@@ -387,7 +392,7 @@ def test_selection_cannot_target_the_default_account_or_accept_forged_grants(con
             forged = {**offered, "person": target, "grant": grant}
             assert browser.post("/connections/select", headers=member, data=forged).status_code == 409
         assert accounts.account_for("third") == "third"
-        assert browser.post("/connections/select", data=offered).status_code == 403
+        assert browser.post("/connections/select", data=offered).status_code == 401
         assert (
             browser.post("/connections/select", headers={"Cookie": member["Cookie"]}, data=offered).status_code == 403
         )
@@ -744,3 +749,121 @@ def test_oversized_forms_are_refused(configured):
     with client(portal) as browser:
         made = browser.post("/connections/disconnect", headers=cookie(auth), data={"epoch": "x" * 5000, "state": "a"})
     assert made.status_code == 409
+
+
+def test_a_stale_sign_in_offers_verify_and_connect_by_link_and_refusals_explain(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        stale = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
+        assert 'href="/connections/login?reauth=1">Verify and reconnect</a>' in stale
+        assert 'action="/connections/start"' not in stale
+        fresh = browser.get("/connections/", headers=cookie(auth)).text
+        assert 'action="/connections/start"' in fresh and "Verify and connect" not in fresh
+        signed_out = browser.post("/connections/start", headers={"Origin": PUBLIC})
+        assert signed_out.status_code == 401 and "Your sign-in has ended" in signed_out.text
+        foreign = browser.post("/connections/start", headers={**cookie(auth), "Origin": "https://other.example.com"})
+        assert foreign.status_code == 403 and "Request refused" in foreign.text
+
+
+def test_a_stale_visit_to_a_sign_in_window_gets_a_confirmation_link(configured):
+    from starlette.applications import Starlette
+
+    from hktvmall_mcp.connections import BrowserRoutes
+
+    _, _, auth, portal = configured
+    app = BrowserRoutes(Starlette(), portal)
+    attempt = "/connect/" + "a" * 32
+    with TestClient(app, base_url=PUBLIC, follow_redirects=False) as browser:
+        page = browser.get(attempt, headers=cookie(auth, fresh=False))
+        assert page.status_code == 403 and "location" not in page.headers
+        assert f'href="/connections/login?reauth=1&amp;next={attempt}"' in page.text
+        assert (
+            page.headers["x-frame-options"] == "DENY"
+            and "frame-ancestors 'none'" in page.headers["content-security-policy"]
+        )
+
+
+@pytest.mark.parametrize("action", ["start", "disconnect", "share", "unshare", "leave", "select"])
+@pytest.mark.parametrize("origin", [None, "https://other.example.com", PUBLIC + "/", "http://app.example.com"])
+def test_every_connection_mutation_requires_the_exact_origin_and_a_browser_session(configured, action, origin):
+    accounts, account, auth, portal = configured
+    connect(accounts, "third", "third@example.com", "third-session")
+    owner, member = cookie(auth), cookie(auth, "third")
+    with client(portal) as browser:
+        browser.get("/connections/", headers=member)
+        browser.submit(owner, "share", "third")
+        browser.submit(member, "select", account)
+        headers = member if action in ("leave", "select") else owner
+        candidates = forms(browser.get("/connections/", headers=headers).text)
+        path, fields = next((path, fields) for path, fields in candidates if path.endswith("/" + action))
+        before = {person: accounts.control(person).read() for person in accounts.known()}
+        blobs = {person: (accounts.directory / person / "session.bin").read_bytes() for person in before}
+        invalid = {"Cookie": headers["Cookie"]}
+        if origin is not None:
+            invalid["Origin"] = origin
+        refused = browser.post(path, headers=invalid, data=fields)
+        assert refused.status_code == 403 and "Request refused" in refused.text
+        signed_out = browser.post(path, headers={"Origin": PUBLIC}, data=fields)
+        assert signed_out.status_code == 401 and "Your sign-in has ended" in signed_out.text
+        assert "location" not in refused.headers and "location" not in signed_out.headers
+    assert {person: accounts.control(person).read() for person in before} == before
+    assert {person: (accounts.directory / person / "session.bin").read_bytes() for person in before} == blobs
+    assert portal.client.calls == [] and not portal.relay.links(account)
+
+
+@pytest.mark.parametrize("action", ["start", "share"])
+def test_step_up_returns_to_the_page_without_replaying_the_sensitive_post(configured, action):
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
+        page = browser.get("/connections/", headers=cookie(auth)).text
+        path, fields = next((path, fields) for path, fields in forms(page) if path.endswith("/" + action))
+        before = accounts.control(account).read()
+        rejected = browser.post(path, headers=cookie(auth, fresh=False), data=fields)
+        assert rejected.status_code == 403 and "location" not in rejected.headers
+        assert "Nothing has changed yet" in rejected.text and forms(rejected.text) == []
+        assert 'href="/connections/login?reauth=1"' in rejected.text
+        assert "form-action 'self'" in rejected.headers["content-security-policy"]
+        # The identity provider returns a fresh session to the page; the rejected POST is never queued.
+        returned = browser.get("/connections/", headers=cookie(auth))
+        assert returned.status_code == 200 and accounts.control(account).read() == before
+        assert portal.client.calls == [] and not portal.relay.links(account)
+        assert browser.post(path, headers=cookie(auth), data=fields).status_code == 303
+        assert accounts.control(account).read() != before
+
+
+def test_interrupted_disconnect_stays_blocked_after_restart_even_with_retained_credentials(
+    configured, service, clock, monkeypatch
+):
+    from hktvmall_mcp.accounts import Accounts
+
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        browser.get("/connections/", headers=cookie(auth, "third"))
+        browser.submit(cookie(auth), "share", "third")
+        browser.submit(cookie(auth, "third"), "select", account)
+        blob = accounts.directory / account / "session.bin"
+        sealed = blob.read_bytes()
+
+        def unavailable(*args):
+            raise OSError("synthetic unavailable credential storage")
+
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(accounts, "disconnect_owned", unavailable)
+            assert browser.submit(cookie(auth), "disconnect").status_code == 303
+        barrier = accounts.control(account).read()
+        assert barrier["state"] == "disconnecting" and blob.read_bytes() == sealed
+
+    restarted = Accounts(accounts.settings, accounts.transport, service, clock=clock)
+    assert restarted.control(account).read() == barrier
+    for person in (account, "third"):
+        with pytest.raises(HktvError, match="connection_disconnected"):
+            restarted.resolve(BEARER_CLIENT, person=person)
+    rebuilt = Connections(restarted, auth=auth, client=Login())
+    with client(rebuilt) as browser:
+        page = browser.get("/connections/", headers=cookie(auth))
+        assert "Access stopped" in page.text and "Finish disconnecting" in page.text
+        assert browser.submit(cookie(auth), "disconnect").status_code == 303
+    after = restarted.control(account).read()
+    assert after["state"] == "disconnected" and not blob.exists()
+    assert after["provider_email"] == barrier["provider_email"] and after["shares"] == barrier["shares"]

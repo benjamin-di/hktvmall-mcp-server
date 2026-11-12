@@ -12,7 +12,6 @@ hktvmall-mcp admin ...        people and their connections on a server that host
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import shutil
@@ -21,15 +20,28 @@ import urllib.request
 
 from . import __version__
 from .config import ConfigError, Settings
+from .logs import SafeParser, diagnostic, setup
 
 
 def main(argv: list[str] | None = None) -> int:
+    setup()
+    try:
+        return command(argv)
+    except ConfigError as error:
+        diagnostic(str(error))
+        return 2
+    except (OSError, ValueError, OverflowError) as error:
+        diagnostic(f"Check command configuration and local state ({type(error).__name__})")
+        return 1
+
+
+def command(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["admin"]:
         from .admin import main as admin
 
         return admin(args[1:])
-    parser = argparse.ArgumentParser(prog="hktvmall-mcp", description="MCP server for HKTVmall (Hong Kong) baskets.")
+    parser = SafeParser(prog="hktvmall-mcp", description="MCP server for HKTVmall (Hong Kong) baskets.")
     parser.add_argument("--version", action="version", version=f"hktvmall-mcp {__version__}")
     commands = parser.add_subparsers(dest="command")
     serve = commands.add_parser("serve", help="serve over streamable HTTP (needs MCP_BEARER_TOKEN)")
@@ -54,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = Settings.from_env()
     except ConfigError as exc:
-        print(f"hktvmall-mcp: {exc}", file=sys.stderr)
+        diagnostic(f"hktvmall-mcp: {exc}")
         return 2
     if options.command == "login":
         return _login(settings, options.browser)
@@ -64,17 +76,15 @@ def main(argv: list[str] | None = None) -> int:
         return _status(settings)
 
     from .auth import AuthConfigError
-    from .logs import setup
     from .server import serve_http, serve_stdio
 
-    setup()
     try:
         if options.command == "serve":
             serve_http(settings, host=options.host, port=options.port)
         else:
             serve_stdio(settings)
     except AuthConfigError as exc:
-        print(f"hktvmall-mcp: {exc}", file=sys.stderr)
+        diagnostic(f"hktvmall-mcp: {exc}")
         return 1
     return 0
 
@@ -89,10 +99,9 @@ def _health(url: str) -> int:
 
 def _own_session(settings: Settings) -> bool:
     if settings.snapshot_path is not None:
-        print(
+        diagnostic(
             "hktvmall-mcp: this server reads its session from HKTVMALL_SESSION_SNAPSHOT; sign in with the program "
-            "that publishes it.",
-            file=sys.stderr,
+            "that publishes it."
         )
         return False
     return True
@@ -104,10 +113,9 @@ def _login(settings: Settings, browser: str) -> int:
     try:
         from hktvmall_login.window import WindowClosed, sign_in
     except ImportError:
-        print(
+        diagnostic(
             "hktvmall-mcp: signing in needs the browser extra: install hktvmall-mcp with its [login] extra, as the\n"
-            "README's Quick start shows (in a checkout: uv run --extra login hktvmall-mcp login).",
-            file=sys.stderr,
+            "README's Quick start shows (in a checkout: uv run --extra login hktvmall-mcp login)."
         )
         return 2
     from .session import LocalSession
@@ -119,21 +127,19 @@ def _login(settings: Settings, browser: str) -> int:
     try:
         result = asyncio.run(sign_in(profile=str(profile), channel="chrome" if browser == "chrome" else None))
     except WindowClosed:
-        print("hktvmall-mcp: the window was closed before signing in; nothing was saved.", file=sys.stderr)
+        diagnostic("hktvmall-mcp: the window was closed before signing in; nothing was saved.")
         return 1
     except Exception as exc:  # patchright reports a missing browser as a plain Error
-        print(f"hktvmall-mcp: the browser could not start ({type(exc).__name__}).", file=sys.stderr)
+        diagnostic(f"hktvmall-mcp: the browser could not start ({type(exc).__name__}).")
         if browser == "chrome":
-            print(
-                "Install Google Chrome, or use --browser chromium after `patchright install chromium`.", file=sys.stderr
-            )
+            diagnostic("Install Google Chrome, or use --browser chromium after `patchright install chromium`.")
         else:
-            print("Run `patchright install chromium` first.", file=sys.stderr)
+            diagnostic("Run `patchright install chromium` first.")
         return 1
     try:
         generation = LocalSession(settings.session_path).write(result["email"], result["user_agent"], result["cookies"])
     except SnapshotError:
-        print("hktvmall-mcp: HKTVmall's answer did not contain a usable session; try again.", file=sys.stderr)
+        diagnostic("hktvmall-mcp: HKTVmall's answer did not contain a usable session; try again.")
         return 1
     from .accounts import mask_email
 

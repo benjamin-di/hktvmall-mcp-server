@@ -129,7 +129,9 @@ def test_http_serves_without_an_access_log(tmp_path, monkeypatch):
     monkeypatch.setattr(FastMCP, "run", lambda self, **kwargs: seen.update(kwargs))
     monkeypatch.setenv("MCP_BEARER_TOKEN", "a-bearer-of-sixteen")
     server.serve_http(Settings(state_dir=tmp_path), host="127.0.0.1", port=8000)
-    assert seen["transport"] == "streamable-http" and seen["uvicorn_config"] == {"access_log": False}
+    assert seen["transport"] == "streamable-http"
+    assert seen["uvicorn_config"]["access_log"] is False
+    assert seen["uvicorn_config"]["log_config"] is None
 
 
 def test_stdio_answers_on_stdout_and_logs_only_to_stderr(tmp_path):
@@ -175,10 +177,22 @@ def test_stdio_answers_on_stdout_and_logs_only_to_stderr(tmp_path):
         process.stdin.close()
         process.wait(timeout=30)
         process.stdout.close()
+        diagnostics = [json.loads(line) for line in process.stderr.read().splitlines()]
         process.stderr.close()
     info = replies[1]["result"]["serverInfo"]
     assert (info["name"], info["version"]) == ("hktvmall", __version__)  # ours, not FastMCP's
     assert "hktv_search" in {t["name"] for t in replies[2]["result"]["tools"]}
+    from hktvmall_mcp.build_identity import BUILD
+
+    assert diagnostics
+    assert len({event["instance"] for event in diagnostics}) == 1
+    for event in diagnostics:
+        assert (event["service"], event["version"], event["source_revision"]) == (
+            BUILD.service,
+            BUILD.version,
+            BUILD.source_revision,
+        )
+        assert event["level"] and event["component"]
     error = json.loads(replies[3]["result"]["content"][0]["text"])["error"]
     assert error["code"] == "not_signed_in" and "hktv_connect" in error["next_step"]
     assert error["action"] == "human_account_check"

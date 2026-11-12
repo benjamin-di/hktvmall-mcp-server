@@ -16,3 +16,5 @@ build/
 # gate
 .deps/
 .artifacts/
+
+src/hktvmall_mcp/build_identity.json

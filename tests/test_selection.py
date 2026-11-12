@@ -141,6 +141,29 @@ def test_history_permission_is_checked_before_live_or_cached_order_data(accounts
     assert ("order_list", 0, 0) in sites["alex"].calls
 
 
+def test_shared_connection_failures_keep_public_errors_and_never_use_the_retained_own_account(accounts, shopping):
+    sites, call = shopping
+    accounts.share("alex", "sam", *control_of(accounts, "alex"))
+    choose(accounts, "sam", "alex")
+    before = {person: list(site.calls) for person, site in sites.items()}
+    epoch = accounts.control("alex").suspend()
+    accounts.disconnect_owned("alex", epoch)
+    error = call("sam", "hktv_get_cart")["error"]
+    assert error["code"] == "owner_reconnect" and error["retryable"] is False
+    assert "alex" in error["next_step"] and error["action"] == "human_account_check"
+    grant = accounts.control("alex").read()["shares"]["sam"]["revision"]
+    accounts.unshare("alex", "sam", *control_of(accounts, "alex"), grant=grant)
+    assert call("sam", "hktv_get_cart")["error"]["code"] == "shared_access_removed"
+    accounts.share("alex", "sam", *control_of(accounts, "alex"))
+    assert call("sam", "hktv_get_cart")["error"]["code"] == "shared_access_removed"
+    choose(accounts, "sam", "alex")
+    grant = accounts.control("alex").read()["shares"]["sam"]["revision"]
+    accounts.unshare("alex", "sam", *control_of(accounts, "alex"), grant=grant, leaving=True)
+    assert call("sam", "hktv_get_cart")["error"]["code"] == "account_selection_needed"
+    assert {person: site.calls for person, site in sites.items()} == before
+    assert sites["sam"].lines == {"EGG": 2}
+
+
 def test_leaving_does_not_select_the_owned_account_or_change_other_members(accounts):
     connect(accounts, "alex")
     connect(accounts, "sam", "sam@example.com", "sam-session")

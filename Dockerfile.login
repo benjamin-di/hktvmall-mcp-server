@@ -58,8 +58,12 @@ RUN uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirem
  && install -d -o 1000 -g 1000 -m 0700 /home/login
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE hatch_build.py ./
 COPY src ./src
+COPY scripts/embed-build-identity.py scripts/
+ARG VERSION
+ARG VCS_REF
+RUN python scripts/embed-build-identity.py "$VERSION" "$VCS_REF"
 RUN uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
 
 RUN python -c "from pathlib import Path; import patchright; p = Path(patchright.__file__).parent / 'driver' / 'node'; p.unlink(); p.symlink_to('/usr/local/bin/browser-node')" \

@@ -15,6 +15,32 @@ make check       # lint, format, lock consistency, tests
 `uv run hktvmall-mcp --help` runs your checkout. To try it against HKTVmall you need a connection from Hong Kong;
 sign in with `uv run --extra login hktvmall-mcp login` and use a separate `HKTVMALL_STATE_DIR` for development.
 
+## Build identity
+
+Every noneditable wheel and sdist carries `src/hktvmall_mcp/build_identity.json`. Built from a clean Git checkout,
+including `uvx --from git+<repository URL>` and `uv build`, `hatch_build.py` stamps that commit; a wheel built from an sdist
+keeps the stamp the sdist ships. Builds refuse uncommitted changes, sparse checkouts and tracked inputs marked
+skip-worktree or assume-unchanged. To build a local release artifact from a reviewed source checkout:
+
+```sh
+product_version="$(uv run hktvmall-mcp --version | cut -d ' ' -f2)"
+source_revision="$(git rev-parse HEAD)"
+uv build
+python3 scripts/check-build-distributions.py "$product_version" "$source_revision"
+```
+
+Image build contexts have no Git metadata, so the Dockerfiles first run `scripts/embed-build-identity.py VERSION
+VCS_REF`; a build without Git metadata or that stamp is refused. The stamp requires the exact package version and a full
+hexadecimal source revision. Both image publishers and the PyPI workflow verify the installed identity, App footer and
+native MCP handshake before promotion. The distribution check also compares packaged Python and HTML bytes with the
+selected source. For an installed artifact, run `scripts/check-build-identity.py VERSION FULL_REVISION` with that
+artifact's Python interpreter.
+
+An editable development checkout reports revision `unknown`, and builds never write a stamp into it. Missing or
+malformed installed identity fails closed. Only the build reads Git; at runtime neither environment variables nor Git
+identify an installed build. A stamp written by `embed-build-identity.py` is ignored by Git and never packaged from a
+Git checkout, but editable runs read it, so remove it after use.
+
 ## Rules
 
 - **No personal data.** Never commit real account data, recorded payloads from a signed-in session, cookies, names,

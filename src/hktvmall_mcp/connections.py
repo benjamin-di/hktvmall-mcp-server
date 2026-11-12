@@ -27,6 +27,7 @@ from starlette.routing import Route
 from .accounts import _tag, mask_email
 from .config import ConfigError
 from .errors import HktvError
+from .ui import renderer_options
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ def configured_auth(settings, env=None):
                 cookie_name="__Host-hktvmall-connections",
                 required_group=env.get("HKTVMALL_CONNECTIONS_GROUP", "mcp-hktvmall"),
                 claim_names=(claim,),
-            )
+            ),
+            **renderer_options(BrowserAuth),
         ), claim
     except (ValueError, KeyError, OSError):
         raise ConfigError("Configure connection OIDC before enabling browser sign-in") from None
@@ -82,6 +84,7 @@ class Connections:
                 auto_start=True,
                 return_url=self.path,
                 intro_html="Sign in to your own HKTVmall account.",
+                **renderer_options(PageText),
             ).with_outcomes(
                 wrong_account="<h1>Different account</h1><p>Nothing was changed. Sign in to the HKTVmall account "
                 "already connected here; an account another person connected cannot be connected again.</p>"
@@ -123,9 +126,7 @@ class Connections:
             return None
 
     def fresh(self, request):
-        identity = self.auth.identity(request)
-        when = identity.get("reauthenticated_at") if identity else None
-        return isinstance(when, (int, float)) and 0 <= self.auth.store.clock() - when <= FRESH_SECONDS
+        return self.auth.fresh(request, FRESH_SECONDS)
 
     # -- the sign-in window ----------------------------------------------------------------------
 
@@ -238,7 +239,7 @@ class Connections:
             status_code=409,
         )
 
-    def form(self, action, label, *, control=None, person=None, kind="button", extra=None, content=""):
+    def form(self, action, label, *, control=None, person=None, kind="button", extra=None, form_id=None):
         control = control or {}
         hidden = "".join(
             f'<input type="hidden" name="{name}" value="{html.escape(str(value), quote=True)}">'
@@ -255,8 +256,9 @@ class Connections:
         elif label == "Reconnect":
             kind = "secondary"
         return (
-            f'<form method="post" action="{self.path}{action}">{hidden}'
-            + content
+            f'<form method="post" action="{self.path}{action}"'
+            + (f' id="{html.escape(form_id, quote=True)}"' if form_id else "")
+            + f">{hidden}"
             + f'<button class="{kind}">{html.escape(label)}</button></form>'
         )
 
@@ -286,7 +288,13 @@ class Connections:
 
     def page(self, body, *, headers=None, status_code=200, refresh=False):
         return HTMLResponse(
-            connection_page("HKTVmall accounts", body, refresh=refresh, login_url=self.path + "login"),
+            connection_page(
+                "HKTVmall accounts",
+                body,
+                refresh=refresh,
+                login_url=self.path + "login",
+                **renderer_options(connection_page),
+            ),
             headers={"Cache-Control": "no-store", **(headers or {})},
             status_code=status_code,
         )
@@ -301,7 +309,11 @@ class Connections:
                 "Sign in with another account, or ask your administrator to check access.</p>"
                 + self.form("logout", "Sign out of Connections", kind="quiet")
             )
-        body = "<p>Choose which basket your assistant uses. Switching never moves or changes basket items.</p>"
+        body = (
+            '<p class="muted">Signed in to Connections as '
+            + html.escape(self.auth.identity(request)["name"])
+            + "</p><p>Choose which basket your assistant uses. Switching never moves or changes basket items.</p>"
+        )
         view, own = {}, {}
         try:
             view = self.view(person)
@@ -310,7 +322,7 @@ class Connections:
             body += self.unavailable("The selected account")
         try:
             own = {"role": "owner" if self.accounts.owns(person) else "none", **self.status(person)}
-            body += self.owner_body(person, own)
+            body += self.owner_body(person, own, fresh=self.fresh(request))
         except HktvError:
             body += self.unavailable("Your own connection")
         try:
@@ -375,7 +387,7 @@ class Connections:
             label,
         )
 
-    def owner_body(self, person, view):
+    def owner_body(self, person, view, fresh=True):
         control = self.accounts.control(person).read()
         state = view["state"]
         selected = control["selection"] == {"account": person, "grant": None}
@@ -400,7 +412,15 @@ class Connections:
         elif state == "connecting":
             body += f'<p><a href="{html.escape(view["url"], quote=True)}">Continue sign-in</a></p>'
         else:
-            body += self.form("start", "Reconnect" if view["role"] == "owner" else "Connect HKTVmall", control=control)
+            label = "Reconnect" if view["role"] == "owner" else "Connect HKTVmall"
+            if fresh:
+                body += self.form("start", label, control=control)
+            else:
+                # Confirm first by navigation; a submitted form cannot be redirected to the identity provider.
+                body += (
+                    f'<p><a class="button" href="{html.escape(self.auth.step_up_url(), quote=True)}">'
+                    f"Verify and {html.escape(label[0].lower() + label[1:])}</a></p>"
+                )
             if view["role"] == "owner" and state != "disconnected":
                 members = len(control["shared_with"])
                 effect = (
@@ -432,16 +452,17 @@ class Connections:
 
     def sharing_body(self, person, control):
         body = (
-            "<h2>Shared with</h2><p>Share shopping access to your own account. People you share with can read and "
-            "change this basket through their assistant. Order history is optional. They cannot see your password, "
-            "reconnect or disconnect it. They choose when to use it; sharing never switches their account.</p>"
+            '<section class="card panel"><h2>Shared with</h2><p>Share shopping access to your own account. '
+            "People you share with can read and change this basket through their assistant. "
+            "Order history is optional. They cannot see your password, reconnect or disconnect it. "
+            "They choose when to use it; sharing never switches their account.</p>"
         )
         candidates = self.candidates(person)
         if not candidates:
             return body + (
                 '<p class="muted">Nobody else has used HKTVmall here yet. People appear once they have used '
                 "HKTVmall through their assistant or opened this page. To add someone, the administrator adds "
-                "them to the HKTVmall group; then send them this page.</p>"
+                "them to the HKTVmall group; then send them this page.</p></section>"
             )
         items = []
         for entry in candidates:
@@ -450,20 +471,27 @@ class Connections:
             if entry["name"] != member and sum(other["name"] == entry["name"] for other in candidates) > 1:
                 name += f' <span class="muted">({html.escape(member)})</span>'
             grant = control["shares"].get(member)
-            check_id = "history-" + member
+            check_id, form_id = "history-" + member, "share-" + member
             checkbox = (
-                f'<label for="{check_id}"><input id="{check_id}" type="checkbox" name="history" value="1"'
+                f'<label for="{check_id}"><input id="{check_id}" form="{html.escape(form_id, quote=True)}" '
+                'type="checkbox" name="history" value="1"'
                 + (" checked" if grant and grant["order_history"] else "")
                 + "> Also allow reading order history</label>"
             )
-            item = "<li>" + ("✓ " if grant else "") + name
+            # The shell styles forms inline-block and labels block. Name, checkbox and buttons therefore each
+            # get their own line; the checkbox joins the share form through form= so both buttons share a row.
+            status = "Shared" + (" with order history" if grant["order_history"] else "") if grant else "Not shared"
+            item = (
+                '<li class="share"><p><strong>' + ("✓ " if grant else "") + name + "</strong>"
+                f' <span class="muted">· {status}</span></p>' + checkbox
+            )
             item += self.form(
                 "share",
                 "Update access" if grant else "Share",
                 control=control,
                 person=member,
                 extra={"grant": grant["revision"] if grant else "new"},
-                content=checkbox,
+                form_id=form_id,
             )
             if grant:
                 item += self.form(
@@ -475,7 +503,7 @@ class Connections:
                     extra={"grant": grant["revision"]},
                 )
             items.append(item + "</li>")
-        return body + "<ul>" + "".join(items) + "</ul>"
+        return body + "<ul>" + "".join(items) + "</ul></section>"
 
     def offers_body(self, person):
         body = "<h2>Shared accounts available to me</h2>"
@@ -526,15 +554,15 @@ class Connections:
     async def start(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
-        if not self.fresh(request):
-            return RedirectResponse(self.path + "login?reauth=1", status_code=303)
+            return self.auth.refused(request)
+        if confirm := self.auth.require_fresh(request, max_age=FRESH_SECONDS, action="connect HKTVmall"):
+            return confirm
         control = self.accounts.control(person)
         try:
             expected, state = await self.intent(request)
             async with control.lifecycle():
                 if self.account(request) != person or not self.fresh(request):
-                    return Response(status_code=403)
+                    return self.auth.refused(request)
                 epoch = control.resume(expected, state, self.auth.identity(request))
                 self.accounts.forget(person)
                 link = self.relay.create(
@@ -555,7 +583,7 @@ class Connections:
     async def disconnect(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
+            return self.auth.refused(request)
         control = self.accounts.control(person)
         try:
             expected, state = await self.intent(request)
@@ -578,9 +606,9 @@ class Connections:
     async def share(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
-        if not self.fresh(request):
-            return RedirectResponse(self.path + "login?reauth=1", status_code=303)
+            return self.auth.refused(request)
+        if confirm := self.auth.require_fresh(request, max_age=FRESH_SECONDS, action="share your HKTVmall account"):
+            return confirm
         try:
             epoch, state, member, grant, history = await self.intent(
                 request, person=True, extra=("grant",), optional=("history",)
@@ -598,7 +626,7 @@ class Connections:
     async def unshare(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
+            return self.auth.refused(request)
         try:
             epoch, state, member, grant = await self.intent(request, person=True, extra=("grant",))
             self.accounts.control(person).bind(self.auth.identity(request))
@@ -610,7 +638,7 @@ class Connections:
     async def leave(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
+            return self.auth.refused(request)
         try:
             epoch, state, owner, grant = await self.intent(request, person=True, extra=("grant",))
             self.accounts.control(person).bind(self.auth.identity(request))
@@ -622,7 +650,7 @@ class Connections:
     async def select(self, request):
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
-            return Response(status_code=403)
+            return self.auth.refused(request)
         try:
             epoch, state, owner, expected, grant = await self.intent(
                 request, person=True, extra=("selection_revision", "grant")
@@ -642,16 +670,15 @@ class BrowserRoutes:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket") and scope.get("path", "").startswith(("/connections/", "/connect/")):
-            if (
-                scope["type"] == "http"
-                and scope["path"].count("/") == 2
-                and scope["path"].startswith("/connect/")
-                and not self.connections.fresh(Request(scope))
-            ):
-                response = RedirectResponse(
-                    self.connections.path + "login?reauth=1&next=" + self.connections.prefix + scope["path"],
-                    status_code=303,
+            if scope["type"] == "http" and scope["path"].count("/") == 2 and scope["path"].startswith("/connect/"):
+                # A page with a link, never a redirect: this address is also reached from the Connect form.
+                confirm = self.connections.auth.require_fresh(
+                    Request(scope),
+                    max_age=FRESH_SECONDS,
+                    next=self.connections.prefix + scope["path"],
+                    action="open this HKTVmall sign-in",
                 )
-                return await response(scope, receive, send)
+                if confirm is not None:
+                    return await confirm(scope, receive, send)
             return await self.connections.app(scope, receive, send)
         return await self.app(scope, receive, send)

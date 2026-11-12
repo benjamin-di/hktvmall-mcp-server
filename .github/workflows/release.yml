@@ -112,6 +112,9 @@ jobs:
           digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
           image="$REG/$SERVER_IMAGE@$digest"
           docker pull -q "$image" >/dev/null
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,src=$PWD/scripts/check-build-identity.py,dst=/tmp/check-build-identity.py,readonly" \
+            --entrypoint python "$image" /tmp/check-build-identity.py "$VERSION" "$VCS_REF"
           # Smoke: the server builds both session modes without a network, refuses HTTP without a bearer, and
           # answers its own health check (the image's HEALTHCHECK) on a read-only root as uid 1000.
           docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /state:uid=1000 \
@@ -142,6 +145,9 @@ jobs:
           digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
           docker pull -q "$REG/$LOGIN_IMAGE@$digest" >/dev/null
           image="$REG/$LOGIN_IMAGE@$digest"
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,src=$PWD/scripts/check-build-identity.py,dst=/tmp/check-build-identity.py,readonly" \
+            --entrypoint python "$image" /tmp/check-build-identity.py "$VERSION" "$VCS_REF"
           # Smoke: the browser, display, remote-desktop server, viewer and CJK fonts are there; the service
           # refuses to start without its bearer; it never runs as root.
           docker run --rm --network none --entrypoint sh "$image" -c '

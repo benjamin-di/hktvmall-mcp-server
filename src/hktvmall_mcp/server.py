@@ -21,6 +21,7 @@ from typing import Annotated, Any, Literal, TypeVar
 
 import anyio.to_thread
 from fastmcp import FastMCP
+from fastmcp import settings as fastmcp_settings
 from fastmcp.apps.config import UI_EXTENSION_ID
 from fastmcp.exceptions import ToolError
 from fastmcp.exceptions import ValidationError as ArgumentError
@@ -37,6 +38,7 @@ from starlette.responses import JSONResponse
 from . import __version__, cart, links, orders, units, views
 from .accounts import DEFAULT, Accounts, AccountTransport, mask_email
 from .auth import require_bearer
+from .build_identity import BUILD
 from .config import Settings
 from .errors import AGENT_INPUT_CODES, SIGN_IN_CODES, HktvError
 from .logs import ToolCallLog
@@ -113,7 +115,7 @@ HTTP_OPTIONS: dict[str, Any] = {
 }
 
 # Keep tool diagnostics readable by omitting redundant per-request access logging.
-UVICORN: dict[str, Any] = {"access_log": False}
+UVICORN: dict[str, Any] = {"access_log": False, "log_config": None}
 
 INSTRUCTIONS = """\
 HKTVmall (Hong Kong) shopping for the connected HKTVmall account's basket. This server searches, reads the
@@ -306,9 +308,25 @@ def product(s: dict[str, Any], details: bool = False) -> dict[str, Any]:
     )
 
 
-CARDS_HTML = (
-    (resources.files(__package__) / "products.html").read_text(encoding="utf-8").replace("__VERSION__", __version__)
-)
+def product_cards_html() -> str:
+    import html
+
+    version_literal = json.dumps(BUILD.version).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    footer = (
+        f'<footer class="build-identity" title="{html.escape(BUILD.source_revision, quote=True)}">'
+        f"<details><summary>HKTVmall v{html.escape(BUILD.version)} · "
+        f"{html.escape(BUILD.source_revision[:12])}</summary>"
+        f"<p>Source revision <code>{html.escape(BUILD.source_revision)}</code></p></details></footer>"
+    )
+    return (
+        (resources.files(__package__) / "products.html")
+        .read_text(encoding="utf-8")
+        .replace('"__VERSION__"', version_literal)
+        .replace("<!-- BUILD_IDENTITY -->", footer)
+    )
+
+
+CARDS_HTML = product_cards_html()
 
 
 def slots_view(acct: Any) -> dict[str, Any]:
@@ -650,7 +668,7 @@ def create_server(
 
     mcp = FastMCP(
         "hktvmall",
-        version=__version__,
+        version=BUILD.version,
         instructions=INSTRUCTIONS,
         auth=auth,
         mask_error_details=True,
@@ -975,7 +993,7 @@ def serve_http(settings: Settings, *, host: str, port: int) -> None:
         transport="streamable-http",
         host=host,
         port=port,
-        uvicorn_config=UVICORN,
+        uvicorn_config={**UVICORN, "log_level": fastmcp_settings.log_level.lower()},
         middleware=middleware,
         # No banner: it advertises a hosting service and asks PyPI for FastMCP updates; only HKTVmall is contacted.
         show_banner=False,

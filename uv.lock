@@ -521,7 +521,7 @@ wheels = [
 
 [[package]]
 name = "hktvmall-mcp"
-version = "0.15.6"
+version = "0.16.1"
 source = { editable = "." }
 dependencies = [
     { name = "account-connections" },
@@ -566,7 +566,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pyjwt", specifier = ">=2.13.0" },
     { name = "python-multipart", specifier = ">=0.0.31" },
-    { name = "signin-window", extras = ["automation", "oidc"], specifier = ">=0.4.17,<0.5" },
+    { name = "signin-window", extras = ["automation", "oidc"], specifier = ">=0.8.1,<0.9" },
     { name = "starlette", specifier = ">=1.3.1,<2" },
 ]
 provides-extras = ["login"]
@@ -1418,16 +1418,16 @@ wheels = [
 
 [[package]]
 name = "signin-window"
-version = "0.4.17"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "starlette" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/57/cbb5a498521fbd0d72a057dfa80fc4d449060754fab574ca6284bb31d75d/signin_window-0.4.17.tar.gz", hash = "sha256:8be95e18f9ff2a4487332883785720d8e5ee219a7912116ad49ca05d6056d646", size = 266573, upload-time = "2026-10-30T16:48:37.817Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/20/6fbb25685900b0f74d0ff0f23dc1585f7257370979faae64d026d6935010/signin_window-0.8.1.tar.gz", hash = "sha256:ee236e5eed44ee30778235f5261874c764d3d1c57c21cdb731c5353bf169306e", size = 319709, upload-time = "2026-11-12T00:03:08.521Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/24/859b4accf31a343e6aa20e18afd6a5c84632840e577be467b1090f807a8a/signin_window-0.4.17-py3-none-any.whl", hash = "sha256:135f4c073409fc82c930f2703525aa0725f37ee90ff36f9d367e33d730259bf0", size = 128879, upload-time = "2026-10-30T16:48:36.742Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/c4/df0113baba65002b2f1aa39406e2f05bf340be07840ba8655e8ffe8bcd6b/signin_window-0.8.1-py3-none-any.whl", hash = "sha256:2e49658be745fb5e2bc2a4ae7ca3897634770f0871dc4a56dd2a42629aed3a47", size = 153148, upload-time = "2026-11-12T00:03:07.247Z" },
 ]
 
 [package.optional-dependencies]
