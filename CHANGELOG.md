@@ -3,6 +3,18 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.16.6] - 2026-11-15
+
+### Fixed
+
+- Keep Linux maintenance diagnostics out of unsupported-platform tests.
+- Make the source-build test for unavailable Git exercise the failure on Windows as well as POSIX systems.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.5; runtime behavior, saved sessions, connection controls and storage formats are unchanged.
+
 ## [0.16.5] - 2026-11-15
 
 ### Fixed

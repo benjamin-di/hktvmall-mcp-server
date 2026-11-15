@@ -61,7 +61,7 @@ def _committed(target):
 
 def _uv_build(project, out, **environment):
     return subprocess.run(
-        ["uv", "build", "--offline", "--out-dir", str(out), str(project)],
+        [shutil.which("uv"), "build", "--offline", "--out-dir", str(out), str(project)],
         capture_output=True,
         text=True,
         timeout=600,
@@ -120,9 +120,8 @@ def test_source_build_refuses_uncommitted_packaged_files_and_unverifiable_checko
         runpy.run_path(str(ROOT / "scripts/embed-build-identity.py"))["embed"](source, __version__, "b" * 40)
         commands = tmp_path / "bin"
         commands.mkdir()
-        (commands / "git").write_text("#!/bin/sh\nexit 128\n")
-        (commands / "git").chmod(0o755)
-        environment["PATH"] = str(commands) + os.pathsep + os.environ["PATH"]
+        environment["PATH"] = str(commands)
+        environment["UV_PYTHON"] = sys.executable
     elif case in {"skip-worktree", "assume-unchanged", "sparse"}:
         name = "src/hktvmall_mcp/ui.py"
         if case == "sparse":

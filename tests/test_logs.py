@@ -210,6 +210,7 @@ def test_login_startup_refusal_keeps_json_on_stderr(monkeypatch, capsys):
     assert_context(payload)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="optional maintenance requires Linux")
 def test_maintenance_parser_keeps_private_arguments_out_of_diagnostics(capsys):
     from hktvmall_maintenance import cli as maintenance
 
