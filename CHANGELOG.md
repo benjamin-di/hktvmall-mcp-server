@@ -3,6 +3,40 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.16.4] - 2026-11-15
+
+### Fixed
+
+- Use the compact mobile sign-in viewer with native keyboard input, Paste and Zoom (31c2d1b)
+- Preserve editor focus while allowing touch controls to activate on WebKit (31c2d1b)
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.3; saved sessions, connection controls and storage formats are unchanged.
+
+## [0.16.3] - 2026-11-14
+
+### Fixed
+
+- Require signin-window 0.8.2 for package installations, so an existing 0.8.1 installation cannot miss the mobile remote-input fix.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.2; saved sessions, account controls and storage formats are unchanged.
+
+## [0.16.2] - 2026-11-14
+
+### Fixed
+
+- Use signin-window 0.8.2 so phone users can open a keyboard in remote sign-in and edits remain bound to their original viewer.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.1; saved sessions, connection controls and account state are unchanged.
+
 ## [0.16.1] - 2026-11-12
 
 _Publishes the changes since the last public release, which the public mirror did not receive; the package is unchanged from 0.16.0._

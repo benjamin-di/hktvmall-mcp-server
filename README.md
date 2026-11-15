@@ -241,8 +241,10 @@ settings now refuse startup, and images before 0.14 are not rollback targets onc
 Pasting works in the login window: Ctrl+V (Cmd+V on a Mac) types the clipboard's text into HKTVmall's page, so a
 password manager's copy can be used (a small add-on to noVNC's viewer from
 [signin-window](https://github.com/benjamin-di/signin-window), the library the login window is built on; up to 1000
-characters the window's keyboard has, which covers ASCII; the text is never logged or kept). On a phone, noVNC's
-keyboard button opens the phone's keyboard, which pastes as usual. Passkeys do not work in a remote window: log in
+characters the window's keyboard has, which covers ASCII; the text is never logged or kept). On a phone, select
+the field on the remote page, then tap **Keyboard** to type or **Paste** to insert copied text. **Done** dismisses
+the keyboard without submitting; use the page's own button to continue. **Zoom** enlarges the page, and dragging
+with one finger pans the view. Passkeys do not work in a remote window: log in
 with a password or a code.
 
 Run the login browser on a private network next to the server, never published to the internet: it listens on port
