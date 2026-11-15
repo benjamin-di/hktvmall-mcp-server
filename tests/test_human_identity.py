@@ -1,6 +1,10 @@
 import json
+import sys
 
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("optional maintenance requires Linux", allow_module_level=True)
 
 from hktvmall_maintenance import human
 

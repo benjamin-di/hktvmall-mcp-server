@@ -3,6 +3,17 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.16.5] - 2026-11-15
+
+### Fixed
+
+- Keep Linux maintenance imports out of unsupported-platform test collection while retaining portable reader and hosted sign-in coverage (7dfdfe3).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.4; saved sessions, connection controls and storage formats are unchanged.
+
 ## [0.16.4] - 2026-11-15
 
 ### Fixed

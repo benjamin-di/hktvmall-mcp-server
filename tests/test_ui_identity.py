@@ -1,6 +1,8 @@
 """Host build forwarding with synthetic local pages, on old and identity-capable renderers."""
 
 import dataclasses
+import os
+import sys
 import time
 from functools import wraps
 from types import SimpleNamespace
@@ -15,12 +17,14 @@ from test_connections import PUBLIC, Login, client, cookie
 from test_connections import configured as configured  # noqa: F401
 
 from hktvmall_login import app as login_app
-from hktvmall_maintenance import human
 from hktvmall_mcp import connections, ui
 from hktvmall_mcp.build_identity import BuildIdentity
 
 IDENTITY = BuildIdentity("hktvmall-mcp", "9.8.7", "1234567890abcdef" * 2 + "12345678")
 TOKEN = "x" * 40
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="hosted OIDC session storage requires POSIX private-state semantics"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +104,14 @@ def test_configured_auth_home_refusals_and_relay_pages_use_host_build(configured
 def test_both_service_factories_forward_host_build_without_exposing_direct_view(entrypoint, monkeypatch):
     import uvicorn
 
-    module = login_app if entrypoint == "login" else human
+    if entrypoint == "human":
+        if sys.platform != "linux":
+            pytest.skip("optional maintenance requires Linux")
+        from hktvmall_maintenance import human
+
+        module = human
+    else:
+        module = login_app
     factory = module.build_app
     seen = {}
 
