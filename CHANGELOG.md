@@ -3,6 +3,54 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.16.10] - 2026-11-24
+
+### Changed
+
+- Upgrade `signin-window` from 0.8.4 to 0.10.0 for mobile/desktop remote viewer improvements (scrollable noVNC container, Restart button, passkey notice, keyboard/paste/zoom ergonomics, and non-blocking sign-in completion handoff).
+- Run the hosted login browser image (`Dockerfile.login`) on pinned Google Chrome stable (`158.0.8127.88-1`) with Mesa/Vulkan libraries and container-scoped SwiftShader WebGL, verified against Google Chrome's managed policy directory (`/etc/opt/chrome/policies/managed`), while retaining Patchright's Chromium for maintenance tasks and keeping local CLI launches free of SwiftShader.
+- Remove the spoofed Android Pixel 9 User-Agent override on phone sign-in layouts and align the phone window size to `500x900` so HKTVmall sees Chrome's genuine browser identity.
+- Show the active view layout (`mobile view` / `desktop view`) on `/connections/` and offer `Start new sign-in` alongside `Continue sign-in`, with fenced replacement teardown and rate-limit preservation.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.9; `signin-window` 0.10.0 adds `revocations` and `session_families` tables to the OIDC `browser-sessions` SQLite store while preserving `sessions`, account control records, and saved session blobs (`make rollback-check`).
+
+## [0.16.9] - 2026-11-24
+
+### Changed
+
+- Trim MCP server `INSTRUCTIONS` (~3.0 KB to ~0.9 KB) to cut aggregate context bloat while preserving basket safety boundaries, `account_context` rules, product-card display guidance, and data invariants.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.8; saved sessions, account controls, and configuration formats are unchanged.
+
+## [0.16.8] - 2026-11-18
+
+### Fixed
+
+- Accept the mobile home page's CSRF token when verifying a reconnected session. Account ownership and cart verification are still required.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.7. Saved sessions, account controls, and configuration formats are unchanged.
+
+## [0.16.7] - 2026-11-18
+
+### Fixed
+
+- Show that cart access is being verified after reconnecting, and show Connected only after the new session can read the cart.
+- Report cancelled or expired sign-in attempts as incomplete without replacing the saved session.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.6. Saved sessions, account controls, and configuration formats are unchanged.
+
 ## [0.16.6] - 2026-11-15
 
 ### Fixed

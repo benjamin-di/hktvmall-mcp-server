@@ -11,6 +11,7 @@ password).
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -19,6 +20,8 @@ from urllib.parse import urlsplit
 from signin_window.browser import LAUNCH_ARGS, browser_environment, harden
 from signin_window.hosts import top_level
 
+log = logging.getLogger(__name__)
+
 ORIGIN = "https://www.hktvmall.com"
 LOGIN_URL = ORIGIN + "/hktv/en/login"
 HOME_URL = ORIGIN + "/hktv/en/"
@@ -26,12 +29,8 @@ HOME_URL = ORIGIN + "/hktv/en/"
 DOCUMENT_HOSTS = ("hktvmall.com", "facebook.com")
 LAYOUTS = {
     "desktop": {"size": (1280, 860), "user_agent": None},
-    # A phone-sized window gets HKTVmall's mobile pages only with a mobile browser identity.
-    "phone": {
-        "size": (430, 900),
-        "user_agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/149.0.0.0 Mobile Safari/537.36",
-    },
+    # Keep Chrome's genuine User-Agent and Client Hints; match signin_window's phone Xvfb size.
+    "phone": {"size": (500, 900), "user_agent": None},
 }
 LOGGED_IN = re.compile(r"['\"]loggedin['\"]\s*:\s*(true|false)")
 CONTACT = re.compile(r"['\"]realContactEmail['\"]\s*:\s*\"([^\"]*)\"")
@@ -75,6 +74,7 @@ async def sign_in(
     channel: str | None = None,
     extra_args: tuple[str, ...] = (),
     on_page: Callable[[str], None] | None = None,
+    on_saving: Callable[[], None] | None = None,
     locked: bool = False,
 ) -> dict[str, Any]:
     """Open HKTVmall's login page in a browser using ``profile`` and wait until the person has signed in.
@@ -97,6 +97,11 @@ async def sign_in(
             timezone_id="Asia/Hong_Kong",
             user_agent=LAYOUTS[layout]["user_agent"],
             env=browser_environment(env),
+            # Patchright's macOS driver adds --enable-unsafe-swiftshader by default; strip it on local
+            # launches and only permit it when the containerized login service passes it explicitly.
+            ignore_default_args=(
+                None if "--enable-unsafe-swiftshader" in extra_args else ["--enable-unsafe-swiftshader"]
+            ),
             args=[
                 f"--window-size={width},{height}",
                 *extra_args,
@@ -105,6 +110,7 @@ async def sign_in(
                 *(LAUNCH_ARGS if locked else ()),
             ],
         )
+        unfinished = "browser sign-in not detected"
         try:
             if locked:
                 await harden(ctx)
@@ -126,11 +132,17 @@ async def sign_in(
                 if on_page is not None:
                     on_page(urlsplit(open_pages[0].url).hostname or "")
                 if await _signed_in(ctx):
+                    unfinished = "provider sign-in proof failed"
                     result = await _prove(ctx)
                     if result is not None:
+                        if on_saving is not None:
+                            on_saving()
+                        unfinished = None
                         return result
                 await asyncio.sleep(WATCH_EVERY)
         finally:
+            if unfinished:
+                log.info("HKTVmall sign-in ended without a handoff: %s", unfinished)
             await ctx.close()
 
 

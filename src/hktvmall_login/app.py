@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from signin_window.browser import policy_installed
+from signin_window.browser import policy_installed as _policy_installed
 from signin_window.service import Window, Windows, build_app
 
 from hktvmall_mcp.logs import diagnostic, setup
@@ -24,23 +24,31 @@ from hktvmall_mcp.ui import renderer_options
 from .window import sign_in
 
 log = logging.getLogger("hktvmall-login")
+CHROME_POLICY_DIR = Path("/etc/opt/chrome/policies/managed")
+
+
+def policy_installed() -> bool:
+    """True when Google Chrome's managed policy directory carries the lock-down policy."""
+    return _policy_installed(dirs=(CHROME_POLICY_DIR,))
 
 
 class PolicyMissing(Exception):
-    """The image's managed Chromium policy is not installed (``python -m signin_window.browser install-policy``)."""
+    """The image's managed Chrome policy is not installed (``python -m signin_window.browser install-policy``)."""
 
 
 async def run_browser(window: Window) -> dict[str, Any]:
     """HKTVmall's login page in a throwaway, locked-down browser on the window's display; the proven session."""
     if not policy_installed():
-        log.error("no sign-in window: the managed Chromium policy is not installed")
+        log.error("no sign-in window: the managed Google Chrome policy is not installed")
         raise PolicyMissing()
     return await sign_in(
         profile=window.temp_profile("hktv-login-"),
         layout=window.layout,
         env=window.env(),
-        extra_args=("--window-position=0,0",),
+        channel="chrome",
+        extra_args=("--window-position=0,0", "--enable-unsafe-swiftshader"),
         on_page=window.waiting,
+        on_saving=window.saving,
         locked=True,
     )
 

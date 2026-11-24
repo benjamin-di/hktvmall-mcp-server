@@ -28,6 +28,7 @@ import secrets
 import socket
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import uvicorn
@@ -41,7 +42,8 @@ from starlette.responses import RedirectResponse
 from hktvmall_mcp.auth import require_bearer
 from hktvmall_mcp.config import Settings
 from hktvmall_mcp.connections import BrowserRoutes
-from hktvmall_mcp.server import HTTP_OPTIONS, build_accounts, create_server
+from hktvmall_mcp.server import HTTP_OPTIONS, _keepalive_loop, build_accounts, create_server
+from hktvmall_mcp.site import PATHS
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from oidc_provider import Provider  # noqa: E402
@@ -90,11 +92,15 @@ async def main() -> int:
             """Instead of HKTVmall's page: one text field, in a headed Chromium filling the window's display (with no
             window manager, keys go to the window under the pointer)."""
             width, height = window.size
+            chrome_path = os.environ.get("CHROME_PATH")
+            launch_args = ["--window-position=0,0", f"--window-size={width},{height}"]
+            if chrome_path:
+                launch_args.append("--enable-unsafe-swiftshader")
             browser = await pw.chromium.launch(
-                executable_path=os.environ.get("CHROME_PATH"),
+                executable_path=chrome_path,
                 headless=False,
                 env=window.env(),
-                args=["--window-position=0,0", f"--window-size={width},{height}"],
+                args=launch_args,
             )
             try:
                 page = await browser.new_page(no_viewport=True)
@@ -144,6 +150,16 @@ async def main() -> int:
             }
         )
         accounts = build_accounts(settings)
+
+        def synthetic_cart(opener, method, url, body=None, headers=None):
+            assert method == "GET" and body is None
+            return 200, {
+                PATHS["home"]: "'loggedin' : true; 'realContactEmail' : \"second@example.com\"; CSRFToken = \"csrf\";",
+                PATHS["cart_page"]: "Synthetic cart page",
+                PATHS["basket"]: '{"status":"SUCCESS","data":{"cartSubTotal":{"value":"0"}}}',
+            }[url.removeprefix("https://www.hktvmall.com")]
+
+        accounts.transport.send = synthetic_cart
         static = require_bearer({"MCP_BEARER_TOKEN": BEARER})
         provider = Provider(issuer=base)
         auth = BrowserAuth(
@@ -230,6 +246,7 @@ async def main() -> int:
         await page.get_by_role("link", name="Continue sign-in", exact=True).click()
         await page.wait_for_selector("iframe")
         await page.get_by_role("button", name="Cancel sign-in", exact=True).click()
+        await page.get_by_role("heading", name="Sign-in did not complete").wait_for()
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
             if not open_windows(windows):
                 break
@@ -260,8 +277,12 @@ async def main() -> int:
         assert saved.exists(), "page closure lost the completed sign-in"
         page = await context.new_page()
         await page.goto(base + "/connections/")
-        await page.get_by_text("Connection saved ·", exact=False).wait_for()
-        print("completed session survived page closure")
+        await page.get_by_text("Verifying cart access ·", exact=False).wait_for()
+        stop = threading.Event()
+        stop.set()
+        await asyncio.to_thread(_keepalive_loop, accounts, stop)
+        await page.get_by_text("Connected ·", exact=False).wait_for()
+        print("completed sign-in survived page closure; Connections waited for the cart check")
 
         async def connection(person):
             body = {

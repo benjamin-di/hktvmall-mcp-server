@@ -86,6 +86,7 @@ class _Held:
     state: str = "unverified"
     verified_at: float | None = None
     dead_at: float | None = None
+    cart_ok: bool | None = None
 
 
 class SessionStore:
@@ -163,6 +164,16 @@ class SessionStore:
         """A usable generation nobody has proven signed in yet (after a restart or a newer session file)."""
         with self._lock:
             return self._refresh() is None and self._held is not None and self._held.state == "unverified"
+
+    def cart_check(self, generation: int) -> bool | None:
+        with self._lock:
+            held = self._held
+            return held.cart_ok if held and held.generation == generation else None
+
+    def note_cart_check(self, generation: int, ok: bool) -> None:
+        with self._lock:
+            if self._held and self._held.generation == generation:
+                self._held.cart_ok = ok
 
     def store_jar(self, jar: http.cookiejar.CookieJar, generation: int) -> None:
         """Keep the cookies HKTVmall set during a call (fresh access_token) for that generation only."""

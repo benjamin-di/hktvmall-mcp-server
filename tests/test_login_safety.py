@@ -33,3 +33,82 @@ def test_the_window_shows_only_hktvmall_or_facebook():
     for url in ("http://www.hktvmall.com/", "https://hktvmall.com.evil.example/", "https://evil.example/",
                 "https://evilhktvmall.com/", "javascript:alert(1)", "file:///etc/passwd"):  # fmt: skip
         assert not allowed_document(url), url
+
+
+def test_phone_layout_uses_genuine_browser_identity_and_filters_swiftshader_locally(monkeypatch, tmp_path):
+    import asyncio
+    import sys
+    import types
+
+    from hktvmall_login import window
+    from hktvmall_login.window import LAYOUTS
+
+    assert LAYOUTS["phone"] == {"size": (500, 900), "user_agent": None}
+    assert LAYOUTS["desktop"] == {"size": (1280, 860), "user_agent": None}
+
+    calls: list[dict] = []
+
+    class StopLaunch(RuntimeError):
+        pass
+
+    class FakeChromium:
+        async def launch_persistent_context(self, profile, **kwargs):
+            calls.append({"profile": profile, **kwargs})
+            raise StopLaunch()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    fake_pkg = types.ModuleType("patchright")
+    fake_async = types.ModuleType("patchright.async_api")
+    fake_async.async_playwright = FakePlaywright
+    fake_pkg.async_api = fake_async
+    monkeypatch.setitem(sys.modules, "patchright", fake_pkg)
+    monkeypatch.setitem(sys.modules, "patchright.async_api", fake_async)
+
+    try:
+        asyncio.run(window.sign_in(profile=str(tmp_path / "local"), layout="desktop"))
+    except StopLaunch:
+        pass
+    try:
+        asyncio.run(
+            window.sign_in(
+                profile=str(tmp_path / "hosted"),
+                layout="phone",
+                channel="chrome",
+                extra_args=("--window-position=0,0", "--enable-unsafe-swiftshader"),
+                locked=True,
+            )
+        )
+    except StopLaunch:
+        pass
+
+    assert len(calls) == 2
+    local_call, hosted_call = calls
+    assert "--enable-unsafe-swiftshader" not in local_call["args"]
+    assert "--enable-unsafe-swiftshader" in (local_call["ignore_default_args"] or ())
+    assert local_call["user_agent"] is None
+    assert "--enable-unsafe-swiftshader" in hosted_call["args"]
+    assert hosted_call["ignore_default_args"] is None
+    assert hosted_call["channel"] == "chrome"
+    assert hosted_call["user_agent"] is None
+
+
+def test_chrome_policy_check_requires_google_chrome_policy_dir(tmp_path, monkeypatch):
+    from signin_window.browser import install_policy
+
+    from hktvmall_login import app
+
+    cft_dir = tmp_path / "chrome_for_testing"
+    chrome_dir = tmp_path / "chrome"
+    install_policy((cft_dir,))
+    monkeypatch.setattr(app, "CHROME_POLICY_DIR", chrome_dir)
+    assert app.policy_installed() is False
+    install_policy((chrome_dir,))
+    assert app.policy_installed() is True

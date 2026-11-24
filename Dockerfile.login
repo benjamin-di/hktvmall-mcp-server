@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # hktvmall-mcp-login: the browser people log in to HKTVmall with (src/hktvmall_login), shown to them through
-# noVNC on the connect pages. A virtual display (Xvfb), a remote-desktop server on loopback (x11vnc), patchright's
-# Chromium and CJK fonts (HKTVmall is largely Chinese). It never automates the login (tests/test_login_safety.py).
+# noVNC on the connect pages. A virtual display (Xvfb), a remote-desktop server on loopback (x11vnc), pinned
+# Google Chrome stable, Mesa/Vulkan for hardware or SwiftShader WebGL, patchright's Chromium (for maintenance),
+# and CJK fonts (HKTVmall is largely Chinese). It never automates the login (tests/test_login_safety.py).
 FROM ghcr.io/astral-sh/uv:0.9.26@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b AS uv
 
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS browser-node
@@ -25,15 +26,31 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=uv /uv /usr/local/bin/
 
+# Pinned Google Chrome stable (amd64) verified by SHA-256: genuine Google Chrome brand and codecs, never unpinned.
+ARG CHROME_VERSION=158.0.8127.88-1
+ARG CHROME_SHA256=a656b2db00a8cb7f13a1d754f6aad91f84014906452c6dfb7f3ead93035da03b
+
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       dumb-init \
       fonts-noto-cjk \
+      libegl1 \
+      libgl1 \
+      libgl1-mesa-dri \
+      libvulkan1 \
+      mesa-vulkan-drivers \
       openssh-client \
       x11vnc \
       xvfb \
+ && curl --fail --silent --show-error --location \
+      "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
+      -o /tmp/google-chrome-stable.deb \
+ && printf '%s  /tmp/google-chrome-stable.deb\n' "${CHROME_SHA256}" | sha256sum --check --status \
+ && apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb \
+ && rm -f /tmp/google-chrome-stable.deb \
+ && google-chrome-stable --version \
  && rm -rf /var/lib/apt/lists/*
 
 # noVNC's own viewer (static files only; the WebSocket bridge is the service's, behind its bearer).

@@ -155,8 +155,13 @@ def test_a_401_that_persists_while_signed_in_is_an_api_change():
     assert err.value.code == "schema_changed" and site.session.marks == ["live"]
 
 
-def test_verify_reads_csrf_and_the_sign_in_flag():
-    acct, site = account({PATHS["home"]: [(200, HOME_IN)]})
+@pytest.mark.parametrize(
+    "home",
+    [HOME_IN, "<script>hktvCommon.init({ 'loggedin' : true, 'CSRFToken' : \"c-1\" });</script>"],
+    ids=["desktop", "mobile"],
+)
+def test_verify_reads_csrf_and_the_sign_in_flag(home):
+    acct, site = account({PATHS["home"]: [(200, home)]})
     acct.verify()
     assert acct.csrf == "c-1" and site.session.marks == ["live"]
 

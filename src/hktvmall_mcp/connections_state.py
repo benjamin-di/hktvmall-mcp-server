@@ -316,13 +316,16 @@ class ConnectionState:
             if data["epoch"] == epoch and data["state"] == "disconnecting":
                 data["state"] = "disconnected"
 
-    def resume(self, epoch=None, state=None, identity=None):
+    def resume(self, epoch=None, state=None, identity=None, *, reconnect=False):
+        """Advance the epoch; for a browser attempt, move the generation floor past the retained session."""
         with self.edit() as data:
             self.expected(data, epoch, state)
             self.bind_data(data, identity)
             previous = data["epoch"]
             if data["state"] == "disconnecting":
                 raise HktvError("connection_disconnected")
+            if reconnect:
+                data["generation"] += 1
             data.update(state="active", epoch=secrets.token_urlsafe(24))
             self._carry_health(previous, data["epoch"])
             return data["epoch"]

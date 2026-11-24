@@ -595,7 +595,7 @@ class Accounts:
                 raise HktvError("invalid_argument", "the login did not produce a usable HKTVmall session") from None
             data.update(provider_email=email, generation=generation)
         self.forget(person)
-        log.info("person %s connected (generation %d)", _tag(person), generation)
+        log.info("person %s saved a session (generation %d)", _tag(person), generation)
         return person
 
     def _bound(self, person: str) -> str | None:

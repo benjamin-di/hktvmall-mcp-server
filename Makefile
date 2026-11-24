@@ -1,10 +1,12 @@
-.PHONY: bootstrap check lock
+.PHONY: bootstrap check lock rollback-check
 
 TEST_ARGS ?=
 bootstrap:
 	uv sync --locked
 check:
 	./scripts/test.sh $(TEST_ARGS)
+rollback-check:
+	uv run --frozen python scripts/rollback-check.py
 # After editing dependencies in pyproject.toml: refresh uv.lock and the images' hash locks.
 lock:
 	uv lock

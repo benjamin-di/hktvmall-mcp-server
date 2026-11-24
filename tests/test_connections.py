@@ -13,11 +13,13 @@ from starlette.testclient import TestClient
 from test_accounts import accounts as accounts  # noqa: F401
 from test_accounts import choose, connect, control_of, cookies
 from test_accounts import keyed as keyed  # noqa: F401
+from test_site import OK_BASKET, ScriptedTransport
 
 from hktvmall_mcp.accounts import BEARER_CLIENT
 from hktvmall_mcp.connections import Connections
 from hktvmall_mcp.errors import HktvError
 from hktvmall_mcp.session import to_jar
+from hktvmall_mcp.site import PATHS
 
 PUBLIC = "https://app.example.com"
 EMAIL = "second@example.com"
@@ -29,16 +31,23 @@ pytestmark = pytest.mark.skipif(
 class Login:
     def __init__(self):
         self.calls = []
+        self.window_state = "waiting"
 
     def start(self, layout, **params):
         self.calls.append("start")
+        self.window_state = "waiting"
         return {"id": "window", "state": "waiting", "view_token": "synthetic-token"}
 
     def state(self, window):
-        return {"state": "waiting", "view_token": "synthetic-token"}
+        return {"state": self.window_state, "view_token": "synthetic-token"}
 
-    def close(self, window):
+    def result(self, window):
+        return {"email": EMAIL, "cookies": cookies("replacement-session"), "user_agent": "Synthetic Browser"}
+
+    def close(self, window, *, cancel_only=False):
         self.calls.append("close")
+        if self.window_state in ("starting", "waiting"):
+            self.window_state = "cancelled"
 
     def static(self, path, window=None):
         return 200, b"<p>Synthetic viewer</p>", "text/html"
@@ -129,6 +138,100 @@ def client(portal):
     return Browser(portal)
 
 
+def synthetic_cart(accounts, *, home=None, basket=(200, OK_BASKET)):
+    transport = ScriptedTransport(
+        {
+            PATHS["home"]: [
+                home or (200, f"'loggedin' : true; 'realContactEmail' : \"{EMAIL}\"; CSRFToken = \"csrf\";")
+            ],
+            PATHS["cart_page"]: [(200, "Synthetic cart page")],
+            PATHS["basket"]: [basket],
+        }
+    )
+    accounts.transport.send = transport.send
+    return transport
+
+
+@pytest.mark.parametrize("ending", ["cancelled", "expired"])
+def test_incomplete_reconnect_does_not_report_the_previous_session_as_connected(configured, ending):
+    accounts, account, auth, portal = configured
+    synthetic_cart(accounts)
+    service = accounts.get(account)
+    service.keepalive()
+    service.session.mark("dead", service.session.generation)
+    blob = accounts.directory / account / "session.bin"
+    saved = blob.read_bytes()
+    with client(portal) as browser:
+        headers = cookie(auth)
+        path = urlsplit(browser.post("/connections/start", headers=headers).headers["location"]).path
+        assert browser.post(path + "/start", headers=headers).status_code == 200
+        if ending == "cancelled":
+            assert browser.post(path + "/cancel", headers=headers).status_code == 204
+        else:
+            portal.client.window_state = ending
+        assert browser.get(path + "/state", headers=headers).json()["state"] in (
+            "cancelled",
+            "reconnect_incomplete",
+        )
+        assert "Sign-in did not complete" in browser.get("/connections/", headers=headers).text
+        assert browser.get("/connections/status", headers=headers).json()["state"] == "reconnect_incomplete"
+    assert blob.read_bytes() == saved
+    accounts.forget(account)
+    restarted = Connections(accounts, auth=auth, client=Login())
+    accounts.get(account).keepalive()
+    assert restarted.status(account)["state"] == "reconnect_incomplete"
+
+
+@pytest.mark.parametrize(
+    ("basket", "code"),
+    [((403, "Synthetic denial"), "basket_unreadable"), ((200, '{"status":"SUCCESS"}'), "schema_changed")],
+)
+def test_new_sign_in_needs_cart_proof_for_its_own_generation(configured, caplog, basket, code):
+    accounts, account, auth, portal = configured
+    synthetic_cart(accounts)
+    accounts.get(account).keepalive()
+    with client(portal) as browser:
+        headers = cookie(auth)
+        path = urlsplit(browser.post("/connections/start", headers=headers).headers["location"]).path
+        assert browser.post(path + "/start", headers=headers).status_code == 200
+        portal.client.window_state = "signed_in"
+        assert browser.get(path + "/state", headers=headers).json()["state"] == "verifying"
+        assert "Verifying cart access" in browser.get("/connections/", headers=headers).text
+
+        transport = synthetic_cart(accounts, basket=basket)
+        service = accounts.get(account)
+        with pytest.raises(HktvError, match=code):
+            service.keepalive()
+        assert PATHS["basket"] in transport.calls and service.session.status()["signed_in"]
+        assert browser.get("/connections/status", headers=headers).json()["state"] == "check_needed"
+        assert f"cart verification failed ({code})" in caplog.text
+        assert EMAIL not in caplog.text and "Synthetic denial" not in caplog.text
+
+        synthetic_cart(
+            accounts,
+            home=(200, f"'loggedin' : true, 'realContactEmail' : \"{EMAIL}\", 'CSRFToken' : \"csrf\""),
+        )
+        service.keepalive()
+        assert browser.get("/connections/status", headers=headers).json()["state"] == "connected"
+        assert "Connected ·" in browser.get("/connections/", headers=headers).text
+
+
+def test_cart_verification_cannot_promote_a_provider_rejected_session(configured, caplog):
+    accounts, account, auth, portal = configured
+    with client(portal) as browser:
+        headers = cookie(auth)
+        path = urlsplit(browser.post("/connections/start", headers=headers).headers["location"]).path
+        assert browser.post(path + "/start", headers=headers).status_code == 200
+        portal.client.window_state = "signed_in"
+        assert browser.get(path + "/state", headers=headers).json()["state"] == "verifying"
+        transport = synthetic_cart(accounts, home=(200, "'loggedin' : false; CSRFToken = \"csrf\";"))
+        with pytest.raises(HktvError, match="session_expired"):
+            accounts.get(account).keepalive()
+        assert transport.calls == [PATHS["home"]]
+        assert browser.get("/connections/status", headers=headers).json()["state"] == "sign_in_needed"
+        assert "provider sign-in proof failed (session_expired)" in caplog.text
+
+
 def test_ui_reads_do_not_claim_a_connection_and_start_requires_fresh_owner_auth(configured):
     accounts, account, auth, portal = configured
     with client(portal) as browser:
@@ -162,6 +265,8 @@ def test_first_visit_records_the_person_with_their_display_name_and_nothing_shar
 
 def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(configured):
     accounts, _, auth, portal = configured
+    synthetic_cart(accounts)
+    accounts.get("second").keepalive()
     owner = cookie(auth, name="Alex Owner")
     member = cookie(auth, "third", name="Sam Member")
     with client(portal) as browser:
@@ -283,6 +388,8 @@ def test_people_with_the_same_display_name_can_be_distinguished_when_sharing(con
 @pytest.mark.parametrize("missing", [True, False])
 def test_lost_or_damaged_saved_session_is_not_shown_as_connected(configured, missing):
     accounts, account, auth, portal = configured
+    synthetic_cart(accounts)
+    accounts.get(account).keepalive()
     with client(portal) as browser:
         assert browser.get("/connections/status", headers=cookie(auth)).json()["state"] == "connected"
         blob = accounts.directory / account / "session.bin"
@@ -512,10 +619,11 @@ def test_disconnect_preserves_record_budgets_identity_sharing_and_generation_but
         browser.submit(cookie(auth), "share", "third")
         browser.submit(cookie(auth, "third"), "select", "second")
         assert browser.post("/connections/start", headers=cookie(auth)).status_code == 303
+        floor = accounts.control(account).read()["generation"]
         assert browser.post("/connections/disconnect", headers=cookie(auth)).status_code == 303
     record = accounts.control(account).read()
     assert record["state"] == "disconnected" and record["provider_email"] == EMAIL
-    assert record["owner"]["sub"] == "subject-second" and record["generation"] == 1
+    assert record["owner"]["sub"] == "subject-second" and record["generation"] == floor
     assert record["shared_with"] == ["third"]
     assert not (accounts.directory / account / "session.bin").exists()
     assert accounts.account_for("second") == account and accounts.account_for("third") == account
@@ -529,7 +637,7 @@ def test_disconnect_preserves_record_budgets_identity_sharing_and_generation_but
     new_epoch = accounts.control(account).resume()
     assert new_epoch != old_epoch
     accounts.adopt_owned(account, new_epoch, EMAIL, cookies("new"), "Synthetic Browser")
-    assert accounts.get(account).session.generation == 2
+    assert accounts.get(account).session.generation > floor
     with pytest.raises(HktvError):
         service.session.checkout_client()  # cached object from the previous epoch stays invalid
 
@@ -867,3 +975,341 @@ def test_interrupted_disconnect_stays_blocked_after_restart_even_with_retained_c
     after = restarted.control(account).read()
     assert after["state"] == "disconnected" and not blob.exists()
     assert after["provider_email"] == barrier["provider_email"] and after["shares"] == barrier["shares"]
+
+
+def test_start_new_sign_in_shows_view_layout_preserves_window_on_429_and_fences_stuck_teardown(configured):
+    import threading
+
+    accounts, account, auth, portal = configured
+    headers = cookie(auth)
+    with client(portal) as browser:
+        first = browser.post("/connections/start", headers=headers)
+        assert first.status_code == 303
+        first_path = urlsplit(first.headers["location"]).path
+        assert browser.post(first_path + "/start", headers=headers, json={"layout": "phone"}).status_code == 200
+        page = browser.get("/connections/", headers=headers).text
+        assert "Sign-in in progress (mobile view)" in page
+        assert "Continue sign-in" in page
+        assert "Start new sign-in" in page
+        stale_page = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
+        assert "Verify and start new sign-in" in stale_page
+        assert 'action="/connections/start"' not in stale_page
+
+        # Exhaust rate limit: 429 must preserve the currently open window and epoch.
+        portal.relay.links_per_hour = 1
+        before_epoch = accounts.control(account).read()["epoch"]
+        limited = browser.post("/connections/start", headers=headers)
+        assert limited.status_code == 429
+        assert accounts.control(account).read()["epoch"] == before_epoch
+        assert browser.get(first_path + "/state", headers=headers).json()["state"] in ("starting", "waiting")
+        portal.relay.links_per_hour = 6
+
+        # Stuck backend teardown returns 409 and closes the replacement link.
+        original_close = portal.client.close
+        portal.client.close = lambda window, *, cancel_only=False: portal.client.calls.append("stuck-close")
+        stuck = browser.post("/connections/start", headers=headers)
+        assert stuck.status_code == 409
+        assert "still closing" in stuck.text
+        assert accounts.control(account).read()["epoch"] == before_epoch
+        assert portal.status(account)["state"] != "connecting"
+        # Retry while still stuck also returns 409 without creating a usable link.
+        assert browser.post("/connections/start", headers=headers).status_code == 409
+        # Once teardown finishes, the next start succeeds.
+        portal.client.close = original_close
+        recovered = browser.post("/connections/start", headers=headers)
+        assert recovered.status_code == 303
+
+        # Saving sign-in cannot be overwritten by a replacement start.
+        saved_path = urlsplit(recovered.headers["location"]).path
+        assert browser.post(saved_path + "/start", headers=headers).status_code == 200
+        link = portal.relay.links(account)[-1]
+        link.state = "saving"
+        assert browser.post("/connections/start", headers=headers).status_code == 409
+        assert "Saving connection" in browser.get("/connections/", headers=headers).text
+        assert "Start new sign-in" not in browser.get("/connections/", headers=headers).text
+
+        # Concurrent tab during teardown cannot open or start the replacement link.
+        link.state = "waiting"
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_close(window, *, cancel_only=False):
+            entered.set()
+            release.wait(5)
+            original_close(window, cancel_only=cancel_only)
+
+        portal.client.close = slow_close
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.setdefault("r", browser.post("/connections/start", headers=headers))
+        )
+        worker.start()
+        assert entered.wait(5)
+        assert portal.status(account)["state"] != "connecting"
+        assert all(item is link for item in portal.relay.links(account))
+        release.set()
+        worker.join(5)
+        assert result["r"].status_code == 303
+
+
+def test_replacement_preserves_just_completed_sign_in_and_closes_failed_candidate(configured, monkeypatch):
+    accounts, account, auth, portal = configured
+    headers = cookie(auth)
+    with client(portal) as browser:
+        first = browser.post("/connections/start", headers=headers)
+        assert first.status_code == 303
+        first_path = urlsplit(first.headers["location"]).path
+        assert browser.post(first_path + "/start", headers=headers).status_code == 200
+        old_link = portal.relay.links(account)[-1]
+        epoch_before = accounts.control(account).read()["epoch"]
+        gen_before = accounts.control(account).read()["generation"]
+
+        # Simulate old link completing adoption (state -> verifying) while teardown runs.
+        orig_cancel = portal.relay.cancel
+
+        def complete_on_cancel(target, *, for_restart=False):
+            if target is old_link:
+                target.window_id = None
+                target.state = "verifying"
+                return
+            orig_cancel(target, for_restart=for_restart)
+
+        monkeypatch.setattr(portal.relay, "cancel", complete_on_cancel)
+        raced = browser.post("/connections/start", headers=headers)
+        assert raced.status_code == 409
+        assert accounts.control(account).read()["epoch"] == epoch_before
+        assert accounts.control(account).read()["generation"] == gen_before
+        assert all(link.closed for link in portal.relay.links(account) if link is not old_link)
+        monkeypatch.setattr(portal.relay, "cancel", orig_cancel)
+
+        # If control.resume raises OSError, candidate link must be closed and unusable under old epoch.
+        old_link.state = "cancelled"
+        control = accounts.control(account)
+        monkeypatch.setattr(control, "resume", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+        monkeypatch.setattr(accounts, "control", lambda person: control)
+        with pytest.raises(OSError, match="disk full"):
+            browser.post("/connections/start", headers=headers)
+        assert portal.status(account)["state"] != "connecting"
+        for candidate in portal.relay.links(account):
+            if candidate is not old_link:
+                assert candidate.closed is True
+                assert browser.post(urlsplit(candidate.url).path + "/start", headers=headers).status_code == 404
+
+
+def test_stale_toolbar_restart_is_refused_before_cancelling(configured):
+    _, _, auth, portal = configured
+    with client(portal) as browser:
+        first = browser.post("/connections/start", headers=cookie(auth))
+        assert first.status_code == 303
+        first_path = urlsplit(first.headers["location"]).path
+        assert browser.post(first_path + "/start", headers=cookie(auth)).status_code == 200
+        before_calls = list(portal.client.calls)
+        stale_restart = browser.post(
+            first_path + "/cancel",
+            headers={**cookie(auth, fresh=False), "Content-Type": "application/json"},
+            content=json.dumps({"for_restart": True}),
+        )
+        assert stale_restart.status_code == 404
+        assert portal.client.calls == before_calls
+        assert browser.get(first_path + "/state", headers=cookie(auth)).json()["state"] in ("starting", "waiting")
+
+
+def test_pending_close_completion_expired_link_and_terminal_reconnect(configured, monkeypatch):
+    accounts, account, auth, portal = configured
+    headers = cookie(auth)
+    with client(portal) as browser:
+        first = browser.post("/connections/start", headers=headers)
+        assert first.status_code == 303
+        first_path = urlsplit(first.headers["location"]).path
+        assert browser.post(first_path + "/start", headers=headers).status_code == 200
+        old_link = portal.relay.links(account)[-1]
+        epoch_before = accounts.control(account).read()["epoch"]
+        gen_before = accounts.control(account).read()["generation"]
+
+        # 1. Pending close retry that observes completion (verifying) must return 409 and keep generation/epoch.
+        orig_close = portal.client.close
+        portal.client.close = lambda window, *, cancel_only=False: None
+        assert browser.post("/connections/start", headers=headers).status_code == 409
+        assert old_link in portal._pending_close.get(account, [])
+
+        orig_cancel = portal.relay.cancel
+
+        def finish_on_retry(target, *, for_restart=False):
+            if target is old_link:
+                target.window_id = None
+                target.closing = False
+                target.state = "verifying"
+                return
+            orig_cancel(target, for_restart=for_restart)
+
+        monkeypatch.setattr(portal.relay, "cancel", finish_on_retry)
+        retry = browser.post("/connections/start", headers=headers)
+        assert retry.status_code == 409
+        assert "just completed" in retry.text
+        assert accounts.control(account).read()["epoch"] == epoch_before
+        assert accounts.control(account).read()["generation"] == gen_before
+        monkeypatch.setattr(portal.relay, "cancel", orig_cancel)
+        portal.client.close = orig_close
+
+        # 2. An already-terminal verifying link must allow intentional Reconnect without 409 or wasted attempts.
+        portal.relay.links_per_hour = 3
+        reconnect = browser.post("/connections/start", headers=headers)
+        assert reconnect.status_code == 303
+        rec_path = urlsplit(reconnect.headers["location"]).path
+        assert browser.post(rec_path + "/start", headers=headers).status_code == 200
+        active_link = portal.relay.links(account)[-1]
+
+        # 3. An expired waiting link popped from _links before _retired is populated must still be fenced.
+        epoch_mid = accounts.control(account).read()["epoch"]
+        with portal.relay._lock:
+            portal.relay._links.pop(active_link.id, None)
+            portal.relay._retired.pop(active_link.id, None)
+        portal.client.close = lambda window, *, cancel_only=False: None
+        portal.relay.links_per_hour = 6
+        blocked = browser.post("/connections/start", headers=headers)
+        assert blocked.status_code == 409
+        assert "still closing" in blocked.text
+        assert accounts.control(account).read()["epoch"] == epoch_mid
+        portal.client.close = orig_close
+
+
+def test_adoption_lock_race_cancelled_retry_and_disconnect_stuck_close(configured):
+    import threading
+
+    accounts, account, auth, portal = configured
+    headers = cookie(auth)
+    with client(portal) as browser:
+        first = browser.post("/connections/start", headers=headers)
+        first_path = urlsplit(first.headers["location"]).path
+        assert browser.post(first_path + "/start", headers=headers).status_code == 200
+        old_link = portal.relay.links(account)[-1]
+        epoch_before = accounts.control(account).read()["epoch"]
+        gen_before = accounts.control(account).read()["generation"]
+
+        # 1a. Adoption holding old_link.lock while Start new sign-in arrives must return 409, not 303.
+        locked = threading.Event()
+        snapshotted = threading.Event()
+        release = threading.Event()
+        orig_snapshot = portal._snapshot_links
+
+        def observe_snapshot(p):
+            result = orig_snapshot(p)
+            snapshotted.set()
+            release.wait(5)
+            return result
+
+        portal._snapshot_links = observe_snapshot
+
+        def finish_adoption():
+            with old_link.lock:
+                locked.set()
+                assert snapshotted.wait(5)
+                old_link.window_id = None
+                old_link.state = "verifying"
+            release.set()
+
+        adopter = threading.Thread(target=finish_adoption)
+        adopter.start()
+        assert locked.wait(5)
+        res = {}
+        requester = threading.Thread(
+            target=lambda: res.setdefault("r", browser.post("/connections/start", headers=headers))
+        )
+        requester.start()
+        adopter.join(5)
+        requester.join(5)
+        portal._snapshot_links = orig_snapshot
+        assert res["r"].status_code == 409
+        assert accounts.control(account).read()["epoch"] == epoch_before
+        assert accounts.control(account).read()["generation"] == gen_before
+
+        # 1b. Repeated stale replace=old_link.id submissions after completion
+        # or expiry return 409 and consume 0 attempts.
+        cur = accounts.control(account).read()
+        before_made = len(portal.relay._made.get(account, ()))
+        for _ in range(3):
+            bound = browser.post(
+                "/connections/start",
+                headers=headers,
+                data={"epoch": cur["epoch"], "state": cur["state"], "replace": old_link.id},
+            )
+            assert bound.status_code == 409
+            assert accounts.control(account).read()["epoch"] == epoch_before
+            assert accounts.control(account).read()["generation"] == gen_before
+        assert len(portal.relay._made.get(account, ())) == before_made
+
+        # 1c. Expired target link still in _known_links must return 409 and consume 0 attempts.
+        exp_resp = browser.post("/connections/start", headers=headers)
+        assert exp_resp.status_code == 303
+        exp_link = portal.relay.links(account)[-1]
+        cur_exp = accounts.control(account).read()
+        exp_made = len(portal.relay._made.get(account, ()))
+        with portal.relay._lock:
+            portal.relay._links.pop(exp_link.id, None)
+        exp_bound = browser.post(
+            "/connections/start",
+            headers=headers,
+            data={"epoch": cur_exp["epoch"], "state": cur_exp["state"], "replace": exp_link.id},
+        )
+        assert exp_bound.status_code == 409
+        assert accounts.control(account).read()["epoch"] == cur_exp["epoch"]
+        assert len(portal.relay._made.get(account, ())) == exp_made
+
+        # 2. Retryable cancelled link reopened concurrently is still drained and fenced.
+        exp_path = urlsplit(exp_resp.headers["location"]).path
+        exp_link.state = "cancelled"
+        exp_link.closed = False
+        with portal.relay._lock:
+            portal.relay._links[exp_link.id] = exp_link
+        assert browser.post(exp_path + "/start", headers=headers).status_code == 200
+        orig_close = portal.client.close
+        portal.client.close = lambda window, *, cancel_only=False: None
+        assert browser.post("/connections/start", headers=headers).status_code == 409
+        assert exp_link in portal._pending_close.get(account, [])
+
+        # 3. Disconnect with stuck backend close preserves _pending_close until backend confirms teardown.
+        accounts.control(account).read()
+        assert browser.submit(headers, "disconnect").status_code == 303
+        assert exp_link in portal._pending_close.get(account, [])
+        still_blocked = browser.post("/connections/start", headers=headers)
+        assert still_blocked.status_code == 409
+        assert "still closing" in still_blocked.text
+        portal.client.close = orig_close
+        assert browser.post("/connections/start", headers=headers).status_code == 303
+
+        # 4. Pre-reserved shared capacity survives another account retiring a link during drain.
+        from signin_window.relay import Link
+
+        portal.relay.max_links = 2
+        with portal.relay._lock:
+            portal.relay._retired["r1"] = Link(
+                "r1", "other", 0.0, 1.0, "https://app.example.com/connect/r1", {}, "other"
+            )
+            portal.relay._links["live1"] = Link(
+                "live1", "other3", 1.0, 9_999_999_999.0, "https://app.example.com/connect/live1", {}, "other3"
+            )
+            portal.relay._links["live2"] = Link(
+                "live2", "other4", 2.0, 9_999_999_999.0, "https://app.example.com/connect/live2", {}, "other4"
+            )
+        orig_cancel = portal._cancel_and_check
+
+        def fill_retired_during_drain(link):
+            with portal.relay._lock:
+                portal.relay._retired["r2"] = Link(
+                    "r2", "other2", 0.0, 1.0, "https://app.example.com/connect/r2", {}, "other2"
+                )
+            return orig_cancel(link)
+
+        portal._cancel_and_check = fill_retired_during_drain
+        try:
+            assert browser.post("/connections/start", headers=headers).status_code == 303
+            with portal.relay._lock:
+                assert len(portal.relay._links) <= portal.relay.max_links
+        finally:
+            portal._cancel_and_check = orig_cancel
+            with portal.relay._lock:
+                portal.relay._retired.pop("r1", None)
+                portal.relay._retired.pop("r2", None)
+                portal.relay._links.pop("live1", None)
+                portal.relay._links.pop("live2", None)
+            portal.relay.max_links = 50

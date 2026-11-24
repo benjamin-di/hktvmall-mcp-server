@@ -48,6 +48,8 @@ names the area, such as `orders_schema_changed`): compare with this page, fix `s
 - The home page says whether the session is signed in (`'loggedin' : true|false`) and whose it is
   (`realContactEmail`). Guests have baskets too, so every new session is checked on the home page before its first
   basket call.
+- The desktop home page declares `CSRFToken` as a variable. The mobile home page returns it as a configuration
+  property. The reader accepts both forms for the token that legacy cart adds require.
 
 ## Basket
 

@@ -81,6 +81,9 @@ def test_the_runner_opens_hktvmalls_page_on_the_windows_display(monkeypatch):
     window = Window("w" * 24, "phone", 1, 0.0, 60.0)
     assert asyncio.run(login_app.run_browser(window)) == SESSION
     assert seen["env"]["DISPLAY"] == ":91" and seen["layout"] == "phone" and seen["profile"] in window.profiles
+    assert seen["channel"] == "chrome"
+    assert "--enable-unsafe-swiftshader" in seen["extra_args"]
+    assert seen["on_saving"] == window.saving
     assert window.state == "waiting" and window.host == "www.hktvmall.com"
     assert seen["locked"] is True  # kiosk mode, Ctrl+T/Ctrl+N closed (signin-window's browser)
 

@@ -57,8 +57,10 @@ page asks for administrator attention. It never repairs retained controls or swi
 Disconnect persists its barrier, cancels windows and deletes the owned sealed session; the record, provider binding,
 sharing, budgets, caches and generation floor stay. It stops this connection for everyone using it, and the UI
 explains the affected members before submission. It does not alter the owner's selection of another person's shared
-account. Reconnect advances the connection epoch and preserves selection and grants. The login window's host and its
-operator can see what a person types there.
+account. Reconnect advances the connection epoch and preserves selection and grants. Connections shows **Verifying
+cart access** after saving a new sign-in. It shows **Connected** only after the read-only keep-alive check reads the
+cart for that session. A cancelled or expired attempt does not replace the saved session or mark it connected.
+The login window's host and its operator can see what a person types there.
 
 There is no fallback after expiry, disconnect, revocation or leaving. A disconnected or expired selected shared
 connection gives `owner_reconnect`; removed or changed access gives `shared_access_removed`. A reissued grant never

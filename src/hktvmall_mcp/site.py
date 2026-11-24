@@ -367,7 +367,7 @@ class Account:
         self._guard()
         home = self.site._nav(self.opener, "home", self.user_agent)
         flag = re.search(r"'loggedin'\s*:\s*(true|false)", home)
-        csrf = re.search(r'CSRFToken = "([^"]+)"', home)
+        csrf = re.search(r'''(?:\bCSRFToken\s*=|'CSRFToken'\s*:)\s*"([^"\r\n]+)"''', home)
         if not flag or not csrf:
             raise HktvError("schema_changed", log_detail="home page config missing")
         if flag.group(1) != "true":
@@ -446,7 +446,12 @@ class Account:
 
     def basket(self) -> dict[str, Any]:
         status, data = self._json("GET", "basket")
-        if status == 200 and isinstance(data, dict) and data.get("status") == "SUCCESS":
+        if (
+            status == 200
+            and isinstance(data, dict)
+            and data.get("status") == "SUCCESS"
+            and isinstance(data.get("data"), dict)
+        ):
             return data["data"]
         if status == 403 and data is None:
             raise HktvError("basket_unreadable", log_detail="basket 403 html")
