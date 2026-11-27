@@ -115,7 +115,7 @@ def configured(accounts, tmp_path):  # noqa: F811
     return accounts, "second", auth, portal
 
 
-def cookie(auth, person="second", subject=None, *, fresh=True, name="Example person"):
+def cookie(auth, person="second", subject=None, *, fresh=True, expired=False, name="Example person"):
     sid = secrets.token_urlsafe(32)
     now = time.time()
     auth.store.save(
@@ -126,8 +126,8 @@ def cookie(auth, person="second", subject=None, *, fresh=True, name="Example per
             "name": name,
             "groups": ["example-users"],
             "claims": {"person_id": person},
-            "expires": now + 900,
-            "auth_time": now,
+            "expires": now - 60 if expired else now + 900,
+            "auth_time": now if fresh else now - 600,
             "reauthenticated_at": now if fresh else None,
         },
     )
@@ -232,19 +232,14 @@ def test_cart_verification_cannot_promote_a_provider_rejected_session(configured
         assert "provider sign-in proof failed (session_expired)" in caplog.text
 
 
-def test_ui_reads_do_not_claim_a_connection_and_start_requires_fresh_owner_auth(configured):
+def test_ui_reads_do_not_claim_a_connection_and_aged_owner_session_starts(configured):
     accounts, account, auth, portal = configured
     with client(portal) as browser:
         assert browser.get("/connections/status").status_code == 401
         assert browser.get("/connections/status", headers=cookie(auth)).status_code == 200
         assert accounts.control(account).read()["owner"] is None
-        # A stale sign-in gets a page whose link starts step-up, never a redirect a browser would cancel.
-        confirm = browser.post("/connections/start", headers=cookie(auth, fresh=False))
-        assert confirm.status_code == 403 and "location" not in confirm.headers
-        assert 'href="/connections/login?reauth=1"' in confirm.text and "connect HKTVmall" in confirm.text
-        assert accounts.control(account).read()["owner"] is None
-        made = browser.post("/connections/start", headers=cookie(auth))
-        assert made.status_code == 303
+        made = browser.post("/connections/start", headers=cookie(auth, fresh=False))
+        assert made.status_code == 303 and "?reauth=1" not in made.headers["location"]
         assert accounts.control(account).read()["owner"] == {"issuer": auth.config.issuer, "sub": "subject-second"}
         assert browser.get("/connections/status", headers=cookie(auth, subject="other-subject")).status_code == 401
 
@@ -275,11 +270,8 @@ def test_the_owner_shares_from_the_page_and_the_member_sees_whose_account(config
         page = browser.get("/connections/", headers=owner).text
         assert "Shared with" in page and "Sam Member" in page and "cannot see your password" in page
         assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
-        stale = cookie(auth, fresh=False, name="Alex Owner")
-        shared = browser.submit(stale, "share", "third")
-        assert shared.status_code == 403 and 'href="/connections/login?reauth=1"' in shared.text
-        assert accounts.control("second").read().get("shared_with", []) == []
-        assert browser.submit(owner, "share", "third").status_code == 303
+        aged = cookie(auth, fresh=False, name="Alex Owner")
+        assert browser.submit(aged, "share", "third").status_code == 303
         assert accounts.control("second").read()["shared_with"] == ["third"]
         assert accounts.resolve(BEARER_CLIENT, person="third").account_id == "third"
         assert browser.submit(member, "select", "second").status_code == 303
@@ -821,6 +813,7 @@ def test_signed_out_home_goes_straight_to_sign_in_and_owner_links_open_the_windo
     with client(portal) as browser:
         home = browser.get("/connections/", follow_redirects=False)
         assert home.status_code == 303 and home.headers["location"].endswith("/connections/login")
+        assert "?reauth=1" not in home.headers["location"]
         browser.post("/connections/start", headers=cookie(auth))  # pins the owner
         mismatch = browser.get("/connections/", headers=cookie(auth, subject="another-subject"))
         assert mismatch.status_code == 200 and "cannot manage this HKTVmall connection" in mismatch.text
@@ -859,36 +852,38 @@ def test_oversized_forms_are_refused(configured):
     assert made.status_code == 409
 
 
-def test_a_stale_sign_in_offers_verify_and_connect_by_link_and_refusals_explain(configured):
+def test_aged_sign_in_renders_connect_form_and_refusals_explain(configured):
     _, _, auth, portal = configured
     with client(portal) as browser:
-        stale = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
-        assert 'href="/connections/login?reauth=1">Verify and reconnect</a>' in stale
-        assert 'action="/connections/start"' not in stale
-        fresh = browser.get("/connections/", headers=cookie(auth)).text
-        assert 'action="/connections/start"' in fresh and "Verify and connect" not in fresh
+        aged = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
+        assert 'action="/connections/start"' in aged
+        assert "?reauth=1" not in aged and "Verify and" not in aged
         signed_out = browser.post("/connections/start", headers={"Origin": PUBLIC})
         assert signed_out.status_code == 401 and "Your sign-in has ended" in signed_out.text
+        expired = browser.post("/connections/start", headers=cookie(auth, expired=True))
+        assert expired.status_code == 401 and "Your sign-in has ended" in expired.text
         foreign = browser.post("/connections/start", headers={**cookie(auth), "Origin": "https://other.example.com"})
         assert foreign.status_code == 403 and "Request refused" in foreign.text
 
 
-def test_a_stale_visit_to_a_sign_in_window_gets_a_confirmation_link(configured):
+def test_aged_visit_to_a_sign_in_window_enters_directly_and_signed_out_is_refused(configured):
     from starlette.applications import Starlette
 
     from hktvmall_mcp.connections import BrowserRoutes
 
     _, _, auth, portal = configured
     app = BrowserRoutes(Starlette(), portal)
-    attempt = "/connect/" + "a" * 32
+    aged = cookie(auth, fresh=False)
+    with client(portal) as portal_browser:
+        made = portal_browser.post("/connections/start", headers=aged)
+        assert made.status_code == 303
+        attempt = urlsplit(made.headers["location"]).path
     with TestClient(app, base_url=PUBLIC, follow_redirects=False) as browser:
-        page = browser.get(attempt, headers=cookie(auth, fresh=False))
-        assert page.status_code == 403 and "location" not in page.headers
-        assert f'href="/connections/login?reauth=1&amp;next={attempt}"' in page.text
-        assert (
-            page.headers["x-frame-options"] == "DENY"
-            and "frame-ancestors 'none'" in page.headers["content-security-policy"]
-        )
+        page = browser.get(attempt, headers=aged)
+        assert page.status_code == 200 and '"autoStart": true' in page.text
+        assert "?reauth=1" not in page.text
+        assert browser.get(attempt).status_code == 404
+        assert browser.get(attempt, headers=cookie(auth, "third")).status_code == 404
 
 
 @pytest.mark.parametrize("action", ["start", "disconnect", "share", "unshare", "leave", "select"])
@@ -901,7 +896,8 @@ def test_every_connection_mutation_requires_the_exact_origin_and_a_browser_sessi
         browser.get("/connections/", headers=member)
         browser.submit(owner, "share", "third")
         browser.submit(member, "select", account)
-        headers = member if action in ("leave", "select") else owner
+        actor = "third" if action in ("leave", "select") else account
+        headers = member if actor == "third" else owner
         candidates = forms(browser.get("/connections/", headers=headers).text)
         path, fields = next((path, fields) for path, fields in candidates if path.endswith("/" + action))
         before = {person: accounts.control(person).read() for person in accounts.known()}
@@ -913,30 +909,27 @@ def test_every_connection_mutation_requires_the_exact_origin_and_a_browser_sessi
         assert refused.status_code == 403 and "Request refused" in refused.text
         signed_out = browser.post(path, headers={"Origin": PUBLIC}, data=fields)
         assert signed_out.status_code == 401 and "Your sign-in has ended" in signed_out.text
+        expired = browser.post(path, headers=cookie(auth, actor, expired=True), data=fields)
+        assert expired.status_code == 401 and "Your sign-in has ended" in expired.text
         assert "location" not in refused.headers and "location" not in signed_out.headers
+        assert "location" not in expired.headers
     assert {person: accounts.control(person).read() for person in before} == before
     assert {person: (accounts.directory / person / "session.bin").read_bytes() for person in before} == blobs
     assert portal.client.calls == [] and not portal.relay.links(account)
 
 
 @pytest.mark.parametrize("action", ["start", "share"])
-def test_step_up_returns_to_the_page_without_replaying_the_sensitive_post(configured, action):
+def test_aged_session_executes_start_and_share_without_step_up(configured, action):
     accounts, account, auth, portal = configured
     with client(portal) as browser:
         browser.get("/connections/", headers=cookie(auth, "third"))
-        page = browser.get("/connections/", headers=cookie(auth)).text
+        aged = cookie(auth, fresh=False)
+        page = browser.get("/connections/", headers=aged).text
+        assert "?reauth=1" not in page and "Verify and" not in page
         path, fields = next((path, fields) for path, fields in forms(page) if path.endswith("/" + action))
         before = accounts.control(account).read()
-        rejected = browser.post(path, headers=cookie(auth, fresh=False), data=fields)
-        assert rejected.status_code == 403 and "location" not in rejected.headers
-        assert "Nothing has changed yet" in rejected.text and forms(rejected.text) == []
-        assert 'href="/connections/login?reauth=1"' in rejected.text
-        assert "form-action 'self'" in rejected.headers["content-security-policy"]
-        # The identity provider returns a fresh session to the page; the rejected POST is never queued.
-        returned = browser.get("/connections/", headers=cookie(auth))
-        assert returned.status_code == 200 and accounts.control(account).read() == before
-        assert portal.client.calls == [] and not portal.relay.links(account)
-        assert browser.post(path, headers=cookie(auth), data=fields).status_code == 303
+        response = browser.post(path, headers=aged, data=fields)
+        assert response.status_code == 303 and "?reauth=1" not in response.headers["location"]
         assert accounts.control(account).read() != before
 
 
@@ -991,9 +984,10 @@ def test_start_new_sign_in_shows_view_layout_preserves_window_on_429_and_fences_
         assert "Sign-in in progress (mobile view)" in page
         assert "Continue sign-in" in page
         assert "Start new sign-in" in page
-        stale_page = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
-        assert "Verify and start new sign-in" in stale_page
-        assert 'action="/connections/start"' not in stale_page
+        aged_page = browser.get("/connections/", headers=cookie(auth, fresh=False)).text
+        assert "Start new sign-in" in aged_page
+        assert 'action="/connections/start"' in aged_page
+        assert "Verify and" not in aged_page and "?reauth=1" not in aged_page
 
         # Exhaust rate limit: 429 must preserve the currently open window and epoch.
         portal.relay.links_per_hour = 1
@@ -1096,22 +1090,27 @@ def test_replacement_preserves_just_completed_sign_in_and_closes_failed_candidat
                 assert browser.post(urlsplit(candidate.url).path + "/start", headers=headers).status_code == 404
 
 
-def test_stale_toolbar_restart_is_refused_before_cancelling(configured):
+def test_aged_session_toolbar_restart_cancels_active_window(configured):
     _, _, auth, portal = configured
     with client(portal) as browser:
         first = browser.post("/connections/start", headers=cookie(auth))
         assert first.status_code == 303
         first_path = urlsplit(first.headers["location"]).path
         assert browser.post(first_path + "/start", headers=cookie(auth)).status_code == 200
-        before_calls = list(portal.client.calls)
-        stale_restart = browser.post(
+        wrong_owner = browser.post(
+            first_path + "/cancel",
+            headers={**cookie(auth, "third"), "Content-Type": "application/json"},
+            content=json.dumps({"for_restart": True}),
+        )
+        assert wrong_owner.status_code == 404
+        aged_restart = browser.post(
             first_path + "/cancel",
             headers={**cookie(auth, fresh=False), "Content-Type": "application/json"},
             content=json.dumps({"for_restart": True}),
         )
-        assert stale_restart.status_code == 404
-        assert portal.client.calls == before_calls
-        assert browser.get(first_path + "/state", headers=cookie(auth)).json()["state"] in ("starting", "waiting")
+        assert aged_restart.status_code == 200
+        assert "close" in portal.client.calls
+        assert browser.post(first_path + "/start", headers=cookie(auth, fresh=False)).status_code == 200
 
 
 def test_pending_close_completion_expired_link_and_terminal_reconnect(configured, monkeypatch):

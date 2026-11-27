@@ -10,8 +10,8 @@ applies to code comments, docs, tests, fixtures and commit messages alike.
 
 ## Verify
 
-`make bootstrap`, then `make check`: ruff, the format check, the lock-consistency check (`requirements-runtime.lock`
-and `requirements-login.lock` must equal `uv export` of `uv.lock`; run `make lock` after a dependency change) and
+`make bootstrap`, then `make check`: ruff, the format check, the lock-consistency check (`requirements-runtime.lock`,
+`requirements-login.lock`, and `requirements-patchright.lock` must match `uv.lock`; run `make lock` after a dependency change) and
 pytest, with a source-bound receipt under `.artifacts/`. Documentation-only changes need `git diff --check` and link
 checks.
 

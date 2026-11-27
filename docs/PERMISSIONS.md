@@ -34,7 +34,7 @@ selected connection never changes either binding.
 
 Ownership, offered access and selection are independent. Each person owns at most one provider connection and
 selects one shopping account, their own or one explicitly shared with them. They can receive several offers. Sharing
-starts empty and needs the owner's fresh authentication. It does not change the recipient's selection; only an
+starts empty and requires the owner's signed-in browser session. It does not change the recipient's selection; only an
 explicit recipient action does. Shared members cannot manage the owner's connection, but can independently connect,
 reconnect, disconnect and share their own slot.
 

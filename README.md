@@ -205,8 +205,8 @@ Single-account/stdio servers have no sharing page; hosted sharing requires peopl
 
 Register exactly `<HKTVMALL_PUBLIC_URL>/connections/callback` with the OIDC provider; require its signed group and the
 administrator-controlled person claim. The first explicit connection, selection or sharing action pins the person's
-issuer and immutable subject; status reads never do. Connect and Share require a fresh authentication (within five
-minutes). Every page, form, viewer asset and WebSocket checks the person; forms carry the relevant connection,
+issuer and immutable subject; status reads never do. Connect and Share require the owner's signed-in browser session.
+Every page, form, viewer asset and WebSocket checks the person; forms carry the relevant connection,
 selection and grant revisions, so a stale form changes nothing. A link, MCP token or forwarded header cannot
 substitute for the browser sign-in. Missing OIDC
 settings refuse browser-enabled HTTP startup. Connecting grants no new assistant permissions; browser Sign out ends

@@ -3,6 +3,18 @@
 All notable changes are recorded here. This project follows
 Semantic Versioning.
 
+## [0.16.11] - 2026-11-27
+
+### Changed
+
+- Remove custom 5-minute freshness gates and `?reauth=1` step-up links on Connections so ordinary valid browser sessions (>300s) can start, share, open `/connect/<id>`, and restart sign-in while preserving ordinary OIDC login, 401 expired-POST refusal without callback replay, owner binding, Origin, revision, and disconnect barriers.
+- Cache Patchright Chromium layer ahead of login Python dependencies, mount BuildKit uv cache in Docker builds, and run offline `publish-public --check-head` in `make check`.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.16.10; saved sessions, account controls, and configuration formats are unchanged.
+
 ## [0.16.10] - 2026-11-24
 
 ### Changed

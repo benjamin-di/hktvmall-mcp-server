@@ -276,3 +276,77 @@ def test_failed_build_does_not_start_browser_but_still_cleans(tmp_path, monkeypa
     assert ci.run("paste") == 17
     assert len(called) == 1 and "build" in called[0]
     assert len(cleaned) == 1
+
+
+def test_paste_build_uses_shared_buildx_builder_when_present(monkeypatch):
+    inspected = []
+
+    class Result:
+        returncode = 0
+
+    def run(argv, **kwargs):
+        inspected.append((argv, kwargs))
+        return Result()
+
+    monkeypatch.setattr(ci.subprocess, "check_output", lambda *args, **kwargs: "a" * 40 + "\n")
+    monkeypatch.setattr(ci.subprocess, "run", run)
+    environment = {"CI_TEST_IMAGE": "synthetic:fixture", "FLEET_BUILDX_CONFIG": "/tmp/synthetic-buildx"}
+    build, _ = ci.commands("paste", environment)
+    assert build[1][:10] == [
+        "docker",
+        "buildx",
+        "build",
+        "--builder",
+        ci.BUILDX_BUILDER,
+        "--load",
+        "--file",
+        "Dockerfile.login",
+        "--tag",
+        "synthetic:fixture",
+    ]
+    assert inspected[0][0] == ["docker", "buildx", "inspect", ci.BUILDX_BUILDER]
+    assert inspected[0][1]["env"]["BUILDX_CONFIG"] == "/tmp/synthetic-buildx"
+    assert "BUILDX_CONFIG" not in environment
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("docker")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], kwargs["timeout"])),
+    ],
+)
+def test_paste_build_falls_back_to_docker_build_when_builder_unavailable(monkeypatch, outcome):
+    monkeypatch.setattr(ci.subprocess, "check_output", lambda *args, **kwargs: "a" * 40 + "\n")
+    monkeypatch.setattr(ci.subprocess, "run", outcome)
+    environment = {"CI_TEST_IMAGE": "synthetic:fixture", "FLEET_BUILDX_CONFIG": "/tmp/synthetic-buildx"}
+    build, _ = ci.commands("paste", environment)
+    assert build[1][:6] == ["docker", "build", "--file", "Dockerfile.login", "--tag", "synthetic:fixture"]
+
+
+def test_paste_build_scopes_buildx_config_to_build_step_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(ci, "ROOT", tmp_path)
+    monkeypatch.setenv("FLEET_BUILDX_CONFIG", "/tmp/synthetic-buildx")
+    monkeypatch.setattr(ci, "shared_buildx_builder", lambda env: env.get("FLEET_BUILDX_CONFIG"))
+    monkeypatch.setattr(
+        ci,
+        "commands",
+        lambda gate, env, report=None: [
+            ("login-image-build", ["docker", "buildx", "build", "--builder", ci.BUILDX_BUILDER, "--load", "."]),
+            ("paste-acceptance", ["pytest", "-s", "scripts/test_paste_e2e.py"]),
+        ],
+    )
+    seen = []
+
+    def command(argv, log, environment):
+        seen.append((argv, dict(environment)))
+        return 0
+
+    monkeypatch.setattr(ci, "command", command)
+    monkeypatch.setattr(ci, "cleanup_docker", lambda *args: None)
+    assert ci.run("paste") == 0
+    assert len(seen) == 2
+    assert seen[0][1].get("BUILDX_CONFIG") == "/tmp/synthetic-buildx"
+    assert "BUILDX_CONFIG" not in seen[1][1]
+    assert seen[0][1]["HOME"].endswith("/home") and seen[0][1]["HOME"].startswith(seen[0][1]["TMPDIR"])

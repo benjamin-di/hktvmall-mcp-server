@@ -21,6 +21,7 @@ LOG_BYTES = 64 * 1024
 ROOT = Path(__file__).resolve().parents[1]
 UV_RUN = ["uv", "run", "--frozen", "--no-sync"]
 GATES = ("offline", "paste")
+BUILDX_BUILDER = "fleet-cache"
 
 
 class Cancelled(BaseException):
@@ -132,18 +133,43 @@ def report_state(report):
     return "present" if root.tag in ("testsuite", "testsuites") else "unreadable"
 
 
+def shared_buildx_builder(environment):
+    """Return the persistent buildx config path when the shared builder exists."""
+    config = (environment.get("FLEET_BUILDX_CONFIG") or "").strip()
+    if not config:
+        return None
+    probe_environment = {**environment, "BUILDX_CONFIG": config}
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "inspect", BUILDX_BUILDER],
+            env=probe_environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return config if result.returncode == 0 else None
+
+
 def commands(gate, environment=None, report=None):
     environment = environment or os.environ
     if gate == "offline":
         return [("make-check", ["make", "check", *([f"TEST_ARGS=--junitxml={report}"] if report else [])])]
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    build = (
+        ["docker", "buildx", "build", "--builder", BUILDX_BUILDER, "--load"]
+        if shared_buildx_builder(environment)
+        else ["docker", "build"]
+    )
     return [
         (
             "login-image-build",
             [
-                "docker",
-                "build",
+                *build,
                 "--file",
                 "Dockerfile.login",
                 "--tag",
@@ -239,10 +265,13 @@ def run_gate(gate, pending):
             notice(f"Running {gate}: {name}")
             started = time.monotonic()
             remaining = max(0.001, deadline - started)
+            step_environment = environment
+            if name == "login-image-build" and argv[:3] == ["docker", "buildx", "build"]:
+                step_environment = {**environment, "BUILDX_CONFIG": environment["FLEET_BUILDX_CONFIG"].strip()}
             status = command(
                 ["timeout", "--signal=TERM", "--kill-after=10s", f"{remaining:.3f}s", *argv],
                 output / f"{name}.log" if output else None,
-                environment,
+                step_environment,
             )
             steps.append({"step": name, "exit_code": status, "seconds": round(time.monotonic() - started, 3)})
             if status:

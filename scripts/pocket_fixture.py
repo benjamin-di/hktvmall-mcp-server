@@ -201,7 +201,7 @@ class PocketFixture:
         enrolled = await cdp.send("WebAuthn.getCredentials", {"authenticatorId": auth["authenticatorId"]})
         assert len(enrolled["credentials"]) == 1
         await context.clear_cookies()
-        await page.goto(self.origin + "/connections/login?reauth=1")
+        await page.goto(self.origin + "/connections/login")
         await identity_redirect(page, self.origin)
         used = await cdp.send("WebAuthn.getCredentials", {"authenticatorId": auth["authenticatorId"]})
         assert used["credentials"][0]["signCount"] > enrolled["credentials"][0]["signCount"]

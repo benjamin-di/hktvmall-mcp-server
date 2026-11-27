@@ -195,7 +195,7 @@ async def main() -> int:
         await context.add_cookies([{"name": "synthetic-subject", "value": "subject-two", "url": base}])
         await context.grant_permissions(["clipboard-write"], origin=base)
         page = await context.new_page()
-        await page.goto(base + "/connections/login?reauth=1")
+        await page.goto(base + "/connections/login")
         await page.wait_for_url(base + "/connections/")
         await page.get_by_text("No HKTVmall account connected yet").wait_for()
         await page.get_by_role("button", name="Connect HKTVmall", exact=True).click()
@@ -209,7 +209,7 @@ async def main() -> int:
         other = await viewer.new_context()
         await other.add_cookies([{"name": "synthetic-subject", "value": "subject-one", "url": base}])
         wrong = await other.new_page()
-        await wrong.goto(base + "/connections/login?reauth=1")
+        await wrong.goto(base + "/connections/login")
         await wrong.wait_for_url(base + "/connections/")
         assert (await other.request.get(page.url + "/state")).status == 404
         assert (await other.request.get(page.url + "/novnc/vnc.html")).status == 404

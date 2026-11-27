@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import collections
 import html
-import json
 import logging
 import os
 import secrets
@@ -24,7 +23,6 @@ from signin_window.page import NO_RETRY, PageText
 from signin_window.relay import AttemptContext, Link, LinkLimited, Relay
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
-from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
@@ -35,7 +33,6 @@ from .ui import renderer_options
 
 log = logging.getLogger(__name__)
 
-FRESH_SECONDS = 300  # Connect and Share need an identity-provider confirmation at most this old
 DEFAULT_NAME = "Your account"  # signin-window's stand-in when the provider sends no name
 INCOMPLETE = "<h1>Sign-in did not complete</h1><p>Return to Connections to start a new sign-in.</p>"
 
@@ -224,9 +221,6 @@ class Connections:
         except HktvError:
             return None
 
-    def fresh(self, request):
-        return self.auth.fresh(request, FRESH_SECONDS)
-
     # -- the sign-in window ----------------------------------------------------------------------
 
     @staticmethod
@@ -299,18 +293,7 @@ class Connections:
             control.require_active(link.context.target)
         except HktvError:
             return False
-        if operation == "cancel" and not self.fresh(request):
-            content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
-            if content_type == "application/json":
-                try:
-                    payload = json.loads(await request.body())
-                except (ValueError, UnicodeError):
-                    payload = {}
-                if isinstance(payload, dict) and payload.get("for_restart"):
-                    return False
         if operation == "start":
-            if not self.fresh(request):
-                return False
             control.bind(self.auth.identity(request))
         return True
 
@@ -510,7 +493,7 @@ class Connections:
             body += self.unavailable("The selected account")
         try:
             own = {"role": "owner" if self.accounts.owns(person) else "none", **self.status(person)}
-            body += self.owner_body(person, own, fresh=self.fresh(request))
+            body += self.owner_body(person, own)
         except HktvError:
             body += self.unavailable("Your own connection")
         try:
@@ -582,7 +565,7 @@ class Connections:
             label,
         )
 
-    def owner_body(self, person, view, fresh=True):
+    def owner_body(self, person, view):
         control = self.accounts.control(person).read()
         state = view["state"]
         selected = control["selection"] == {"account": person, "grant": None}
@@ -613,28 +596,15 @@ class Connections:
             body += "<p>You can close this page while the connection is saved.</p>"
         elif state == "connecting":
             body += f'<p><a class="button" href="{html.escape(view["url"], quote=True)}">Continue sign-in</a></p>'
-            if fresh:
-                body += self.form(
-                    "start",
-                    "Start new sign-in",
-                    control=control,
-                    extra={"replace": view["url"].rsplit("/", 1)[-1]},
-                )
-            else:
-                body += (
-                    f'<p><a class="button" href="{html.escape(self.auth.step_up_url(), quote=True)}">'
-                    "Verify and start new sign-in</a></p>"
-                )
+            body += self.form(
+                "start",
+                "Start new sign-in",
+                control=control,
+                extra={"replace": view["url"].rsplit("/", 1)[-1]},
+            )
         else:
             label = "Reconnect" if view["role"] == "owner" else "Connect HKTVmall"
-            if fresh:
-                body += self.form("start", label, control=control)
-            else:
-                # Confirm first by navigation; a submitted form cannot be redirected to the identity provider.
-                body += (
-                    f'<p><a class="button" href="{html.escape(self.auth.step_up_url(), quote=True)}">'
-                    f"Verify and {html.escape(label[0].lower() + label[1:])}</a></p>"
-                )
+            body += self.form("start", label, control=control)
             if view["role"] == "owner" and state != "disconnected":
                 members = len(control["shared_with"])
                 effect = (
@@ -769,13 +739,11 @@ class Connections:
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
             return self.auth.refused(request)
-        if confirm := self.auth.require_fresh(request, max_age=FRESH_SECONDS, action="connect HKTVmall"):
-            return confirm
         control = self.accounts.control(person)
         try:
             expected, state, replace_id = await self.intent(request, optional=("replace",))
             async with control.lifecycle():
-                if self.account(request) != person or not self.fresh(request):
+                if self.account(request) != person:
                     return self.auth.refused(request)
                 still_open = []
                 pending_completed = False
@@ -967,8 +935,6 @@ class Connections:
         person = self.account(request)
         if person is None or not self.auth.origin_ok(request):
             return self.auth.refused(request)
-        if confirm := self.auth.require_fresh(request, max_age=FRESH_SECONDS, action="share your HKTVmall account"):
-            return confirm
         try:
             epoch, state, member, grant, history = await self.intent(
                 request, person=True, extra=("grant",), optional=("history",)
@@ -1030,15 +996,5 @@ class BrowserRoutes:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket") and scope.get("path", "").startswith(("/connections/", "/connect/")):
-            if scope["type"] == "http" and scope["path"].count("/") == 2 and scope["path"].startswith("/connect/"):
-                # A page with a link, never a redirect: this address is also reached from the Connect form.
-                confirm = self.connections.auth.require_fresh(
-                    Request(scope),
-                    max_age=FRESH_SECONDS,
-                    next=self.connections.prefix + scope["path"],
-                    action="open this HKTVmall sign-in",
-                )
-                if confirm is not None:
-                    return await confirm(scope, receive, send)
             return await self.connections.app(scope, receive, send)
         return await self.app(scope, receive, send)

@@ -34,4 +34,9 @@ if ! diff -u requirements-login.lock "$invocation/requirements-login.lock"; then
     echo "requirements-login.lock is stale: run make lock" >&2
     exit 1
 fi
+.venv/bin/python scripts/export-patchright-lock.py -o "$invocation/requirements-patchright.lock"
+if ! diff -u requirements-patchright.lock "$invocation/requirements-patchright.lock"; then
+    echo "requirements-patchright.lock is stale: run make lock" >&2
+    exit 1
+fi
 .venv/bin/python -m pytest --junitxml="$invocation/junit.xml" "$@" 2>&1 | tee "$invocation/tests.log"

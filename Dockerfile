@@ -19,7 +19,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements-runtime.lock /tmp/requirements-runtime.lock
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-runtime.lock \
+    UV_CACHE_DIR=/root/.cache/uv uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-runtime.lock \
  && rm /tmp/requirements-runtime.lock
 
 WORKDIR /app
@@ -30,7 +30,8 @@ ARG VERSION
 ARG VCS_REF
 RUN python scripts/embed-build-identity.py "$VERSION" "$VCS_REF"
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
-    uv pip install --system --compile-bytecode --no-deps . \
+    --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv uv pip install --system --compile-bytecode --no-deps . \
  && rm -rf /app/src \
  && install -d -o 1000 -g 1000 -m 0700 /state
 

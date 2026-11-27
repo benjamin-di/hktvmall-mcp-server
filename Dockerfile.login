@@ -65,12 +65,20 @@ RUN curl --fail --silent --show-error --location \
       "noVNC-${NOVNC_VERSION}/vnc.html" \
  && rm /tmp/novnc.tar.gz
 
-# Locked dependencies first, so a code-only release reuses the Chromium layer.
-COPY requirements-login.lock /tmp/requirements-login.lock
-RUN uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-login.lock \
+# Locked Patchright and its Chromium binary first, so signin-window and other
+# Python login dependency updates reuse the cached browser layer.
+COPY requirements-patchright.lock /tmp/requirements-patchright.lock
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-patchright.lock \
  && patchright install --with-deps chromium \
+ && rm -rf /var/lib/apt/lists/* /tmp/requirements-patchright.lock
+
+# Remaining locked login dependencies (including signin-window) and managed Chrome policy.
+COPY requirements-login.lock /tmp/requirements-login.lock
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-login.lock \
  && python -m signin_window.browser install-policy \
- && rm -rf /var/lib/apt/lists/* /tmp/requirements-login.lock \
+ && rm -f /tmp/requirements-login.lock \
  && useradd --uid 1000 --home-dir /home/login --shell /usr/sbin/nologin login \
  && install -d -o 1000 -g 1000 -m 0700 /home/login
 
@@ -81,7 +89,8 @@ COPY scripts/embed-build-identity.py scripts/
 ARG VERSION
 ARG VCS_REF
 RUN python scripts/embed-build-identity.py "$VERSION" "$VCS_REF"
-RUN uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
 
 RUN python -c "from pathlib import Path; import patchright; p = Path(patchright.__file__).parent / 'driver' / 'node'; p.unlink(); p.symlink_to('/usr/local/bin/browser-node')" \
  && python -m patchright --version

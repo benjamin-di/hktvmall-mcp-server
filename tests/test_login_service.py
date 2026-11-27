@@ -96,6 +96,62 @@ def test_no_window_opens_without_the_managed_policy(monkeypatch):
     assert "python -m signin_window.browser install-policy" in dockerfile
 
 
+def test_dockerfile_login_caches_patchright_chromium_before_login_requirements():
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile.login").read_text(encoding="utf-8")
+
+    copy_patchright = dockerfile.index("COPY requirements-patchright.lock /tmp/requirements-patchright.lock")
+    install_patchright = dockerfile.index(
+        "uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-patchright.lock"
+    )
+    install_chromium = dockerfile.index("patchright install --with-deps chromium")
+    copy_login = dockerfile.index("COPY requirements-login.lock /tmp/requirements-login.lock")
+    install_login = dockerfile.index(
+        "uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-login.lock"
+    )
+    install_policy = dockerfile.index("python -m signin_window.browser install-policy")
+
+    assert copy_patchright < install_patchright < install_chromium < copy_login < install_login < install_policy
+    assert "apt-get upgrade" in dockerfile
+    assert "CHROME_SHA256" in dockerfile
+    assert "NOVNC_SHA256" in dockerfile
+    assert "scripts/embed-build-identity.py" in dockerfile
+    assert "symlink_to('/usr/local/bin/browser-node')" in dockerfile
+    assert "USER 1000:1000" in dockerfile
+    assert dockerfile.count("--mount=type=cache,target=/root/.cache/uv") == 3
+    assert dockerfile.count("UV_CACHE_DIR=/root/.cache/uv uv pip install") == 3
+    assert "--no-shell" not in dockerfile
+
+    server_dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    assert server_dockerfile.count("--mount=type=cache,target=/root/.cache/uv") == 2
+    assert server_dockerfile.count("UV_CACHE_DIR=/root/.cache/uv uv pip install") == 2
+
+
+def test_patchright_lock_aligns_with_login_lock_and_uv_lock():
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("export_patchright_lock", root / "scripts/export-patchright-lock.py")
+    assert spec is not None and spec.loader is not None
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+
+    patchright_lock = (root / "requirements-patchright.lock").read_text(encoding="utf-8")
+    login_lock = (root / "requirements-login.lock").read_text(encoding="utf-8")
+
+    expected = exporter.render_patchright_lock(root / "uv.lock", root / "requirements-login.lock")
+    assert patchright_lock == expected
+
+    patchright_blocks = exporter.parse_requirements_blocks(patchright_lock)
+    login_blocks = exporter.parse_requirements_blocks(login_lock)
+    assert "patchright" in patchright_blocks
+    assert "signin-window" not in patchright_blocks
+    for pkg, lines in patchright_blocks.items():
+        assert pkg in login_blocks
+        assert lines == login_blocks[pkg]
+        assert any("--hash=sha256:" in line for line in lines), f"{pkg} missing hashes"
+
+
 def test_session_cookies_keep_hktvmall_only_in_the_snapshot_shape():
     cookies = session_cookies(
         [

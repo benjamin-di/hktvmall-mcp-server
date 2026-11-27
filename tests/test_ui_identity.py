@@ -77,15 +77,15 @@ def test_configured_auth_home_refusals_and_relay_pages_use_host_build(configured
         refused = browser.post("/connections/start", headers={"Origin": PUBLIC})
         assert refused.status_code == 401
         assert_identity(refused.text)
-        stale = browser.post("/connections/start", headers=cookie(auth, fresh=False))
-        assert stale.status_code == 403
-        assert_identity(stale.text)
+        foreign = browser.post("/connections/start", headers={**cookie(auth), "Origin": "https://other.example.com"})
+        assert foreign.status_code == 403
+        assert_identity(foreign.text)
         conflict = browser.post("/connections/start", headers=cookie(auth), data={"epoch": "stale", "state": "active"})
         assert conflict.status_code == 409
         assert_identity(conflict.text)
-        made = browser.post("/connections/start", headers=cookie(auth))
+        made = browser.post("/connections/start", headers=cookie(auth, fresh=False))
         assert made.status_code == 303
-        attempt = browser.get(made.headers["location"], headers=cookie(auth))
+        attempt = browser.get(made.headers["location"], headers=cookie(auth, fresh=False))
         assert attempt.status_code == 200
         assert_identity(attempt.text)
         expired = browser.get("/connect/" + "a" * 32, headers=cookie(auth))
